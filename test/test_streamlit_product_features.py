@@ -16,6 +16,12 @@ sys.path.insert(0, ROOT)
 
 from hengline.streamlit import st_product_features as features
 
+ST_MAIN = Path(ROOT) / "hengline" / "streamlit" / "st_main.py"
+
+
+def read_st_main() -> str:
+    return ST_MAIN.read_text(encoding="utf-8-sig")
+
 
 class ProductFeatureHelperTests(unittest.TestCase):
     def setUp(self):
@@ -141,6 +147,29 @@ class ProductFeatureHelperTests(unittest.TestCase):
         html = features.build_html_report(result)
         self.assertIn("<!doctype html>", html)
         self.assertIn("股票 AI 分析报告 - NVDA", html)
+
+    def test_workspace_ui_helpers_are_present(self):
+        src = read_st_main()
+        for name in [
+            "apply_theme_override",
+            "quality_badge_html",
+            "render_workspace_right_rail",
+            "render_agent_workflow_strip",
+            "build_overview_cards",
+            "render_ai_overview_panel",
+        ]:
+            self.assertIn(f"def {name}", src)
+        self.assertIn("right-rail", src)
+        self.assertIn("workflow-strip", src)
+        self.assertIn("terminal-card", src)
+
+    def test_main_layout_uses_content_and_right_rail_columns(self):
+        src = read_st_main()
+        self.assertIn("content_col, rail_col = st.columns([4.2, 1.15]", src)
+        self.assertIn("render_workspace_right_rail(", src)
+        self.assertIn("st.session_state[\"last_analysis_result\"] = result", src)
+        self.assertIn("界面主题", src)
+        self.assertIn("深色终端", src)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@
 
 import os
 import sys
+import html
 from datetime import date, timedelta
 
 import pandas as pd
@@ -46,24 +47,57 @@ from hengline.streamlit.st_product_features import (  # noqa: E402
 # 全局页面样式（从 setup_page 内联 <style> 提取为模块常量，便于集中维护）
 APP_CSS = """
 <style>
+:root {
+    --terminal-navy: #0b1220;
+    --terminal-ink: #111827;
+    --terminal-muted: #64748b;
+    --terminal-line: #dbe3ee;
+    --terminal-panel: #ffffff;
+    --terminal-bg: #f6f8fb;
+    --accent-blue: #2563eb;
+    --accent-green: #059669;
+    --accent-red: #dc2626;
+    --accent-amber: #d97706;
+}
+.stApp, [data-testid="stAppViewContainer"] {
+    background: var(--terminal-bg);
+    color: var(--terminal-ink);
+}
 .block-container {
-    padding-top: 1.4rem;
+    padding-top: 2.4rem;
     padding-bottom: 2.5rem;
-    max-width: 1500px;
+    max-width: 1760px;
 }
 [data-testid="stSidebar"] {
-    background: #f4f7fb;
+    background: #eef3f9;
     border-right: 1px solid #dde4ee;
 }
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] span {
+    color: #111827;
+}
+[data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+    color: var(--terminal-navy);
+    letter-spacing: 0;
+}
+.stMarkdown, .stCaption, .stText, .stDataFrame {
+    color: var(--terminal-ink);
+}
+.stMarkdown p {
+    color: #334155;
+}
 .app-header {
-    border-bottom: 1px solid #e5e7eb;
-    padding: 0.4rem 0 1.1rem 0;
-    margin-bottom: 1.2rem;
+    border: 1px solid #dbe3ee;
+    border-radius: 8px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+    padding: 0.9rem 1rem;
+    margin-bottom: 1rem;
 }
 .main-title {
-    color: #073b74;
+    color: var(--terminal-navy);
     font-weight: 800;
-    font-size: 2.15rem;
+    font-size: 1.65rem;
     line-height: 1.15;
     margin: 0;
 }
@@ -80,7 +114,7 @@ APP_CSS = """
 }
 .context-pill {
     border: 1px solid #d7dee8;
-    border-radius: 999px;
+    border-radius: 6px;
     padding: 0.25rem 0.7rem;
     color: #344054;
     background: #ffffff;
@@ -104,9 +138,9 @@ APP_CSS = """
     margin: 0.8rem 0 1.1rem 0;
 }
 .insight-card {
-    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    background: #ffffff;
     border: 1px solid #dfe7f1;
-    border-radius: 0.5rem;
+    border-radius: 8px;
     padding: 0.85rem 0.95rem;
     min-height: 6.2rem;
 }
@@ -120,6 +154,7 @@ APP_CSS = """
     font-size: 1.22rem;
     line-height: 1.2;
     font-weight: 780;
+    font-variant-numeric: tabular-nums;
 }
 .insight-note {
     color: #526071;
@@ -137,14 +172,14 @@ APP_CSS = """
 .callout strong { color: #0f172a; }
 .split-panel {
     border: 1px solid #e2e8f0;
-    border-radius: 0.5rem;
+    border-radius: 8px;
     background: #ffffff;
     padding: 0.9rem 1rem;
 }
 div[data-testid="stMetric"] {
     background: #ffffff;
     border: 1px solid #e6ebf2;
-    border-radius: 0.5rem;
+    border-radius: 8px;
     padding: 0.7rem 0.85rem;
 }
 div[data-testid="stMetricLabel"] {
@@ -160,6 +195,102 @@ div[data-testid="stMetricLabel"] {
 }
 .recommendation-box h4 { margin: 0 0 0.4rem 0; color: #111827; }
 .muted-small { color: #6b7280; font-size: 0.86rem; }
+.terminal-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+    gap: 0.65rem;
+    margin: 0.75rem 0 1rem 0;
+}
+.terminal-card {
+    background: var(--terminal-panel);
+    border: 1px solid var(--terminal-line);
+    border-radius: 8px;
+    padding: 0.75rem 0.85rem;
+    min-height: 5.6rem;
+}
+.terminal-card .label {
+    color: var(--terminal-muted);
+    font-size: 0.76rem;
+    margin-bottom: 0.28rem;
+}
+.terminal-card .value {
+    color: var(--terminal-ink);
+    font-size: 1.12rem;
+    font-weight: 760;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+}
+.terminal-card .note {
+    color: #64748b;
+    font-size: 0.78rem;
+    line-height: 1.32;
+    margin-top: 0.35rem;
+}
+.quality-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border-radius: 999px;
+    padding: 0.18rem 0.55rem;
+    font-size: 0.76rem;
+    font-weight: 700;
+    border: 1px solid transparent;
+    white-space: nowrap;
+}
+.quality-verified { color: #047857; background: #ecfdf5; border-color: #a7f3d0; }
+.quality-partial { color: #334155; background: #f1f5f9; border-color: #cbd5e1; }
+.quality-estimated { color: #92400e; background: #fffbeb; border-color: #fde68a; }
+.quality-simulated { color: #9a3412; background: #fff7ed; border-color: #fed7aa; }
+.quality-unavailable { color: #991b1b; background: #fef2f2; border-color: #fecaca; }
+.right-rail {
+    position: sticky;
+    top: 0.75rem;
+    border: 1px solid var(--terminal-line);
+    border-radius: 8px;
+    background: #ffffff;
+    padding: 0.85rem;
+}
+.rail-title {
+    color: var(--terminal-navy);
+    font-size: 0.95rem;
+    font-weight: 800;
+    margin: 0.25rem 0 0.55rem 0;
+}
+.rail-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.65rem;
+    border-bottom: 1px solid #eef2f7;
+    padding: 0.5rem 0;
+    font-size: 0.82rem;
+}
+.rail-row span:first-child { color: #64748b; }
+.rail-row span:last-child { color: #111827; font-weight: 700; text-align: right; }
+.workflow-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+    gap: 0.5rem;
+    margin: 0.75rem 0 1rem 0;
+}
+.workflow-node {
+    border: 1px solid #dbe3ee;
+    border-radius: 8px;
+    background: #ffffff;
+    padding: 0.62rem 0.7rem;
+}
+.workflow-node .name { font-size: 0.8rem; font-weight: 780; color: #111827; }
+.workflow-node .state { font-size: 0.72rem; margin-top: 0.25rem; color: #64748b; }
+.workflow-success { border-left: 4px solid var(--accent-green); }
+.workflow-failed { border-left: 4px solid var(--accent-red); }
+.workflow-waiting { border-left: 4px solid #94a3b8; }
+.workflow-retry { border-left: 4px solid var(--accent-amber); }
+.summary-panel {
+    border: 1px solid var(--terminal-line);
+    border-radius: 8px;
+    background: #ffffff;
+    padding: 0.9rem;
+    min-height: 100%;
+}
 </style>
 """
 
@@ -246,6 +377,77 @@ def setup_page():
     st.markdown(APP_CSS, unsafe_allow_html=True)
 
 
+def apply_theme_override(theme_mode: str):
+    """Apply a quiet light/dark research-workbench theme override."""
+    if theme_mode != "深色终端":
+        return
+    st.markdown(
+        """
+        <style>
+        .stApp, [data-testid="stAppViewContainer"] {
+            background: #0b1220;
+            color: #e5e7eb;
+        }
+        [data-testid="stSidebar"] {
+            background: #111827;
+            border-right-color: #1f2937;
+        }
+        [data-testid="stSidebar"] label,
+        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] span,
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3 {
+            color: #e5e7eb;
+        }
+        .app-header,
+        .terminal-card,
+        .right-rail,
+        .split-panel,
+        .workflow-node,
+        div[data-testid="stMetric"] {
+            background: #111827;
+            border-color: #243244;
+        }
+        .main-title,
+        .section-title,
+        .terminal-card .value,
+        .workflow-node .name,
+        .rail-title,
+        .rail-row span:last-child {
+            color: #f8fafc;
+        }
+        .sub-title,
+        .terminal-card .note,
+        .terminal-card .label,
+        .workflow-node .state,
+        .rail-row span:first-child,
+        .muted-small,
+        .data-note,
+        .stMarkdown p {
+            color: #cbd5e1;
+        }
+        .context-pill {
+            background: #0f172a;
+            border-color: #334155;
+            color: #e5e7eb;
+        }
+        .callout,
+        .recommendation-box {
+            background: #101827;
+            border-color: #334155;
+            color: #e5e7eb;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def safe_html(value) -> str:
+    """Escape values before injecting into Streamlit HTML snippets."""
+    return html.escape(format_optional(value, ""), quote=True)
+
+
 def stock_display_name(stock_info: dict, ticker: str) -> str:
     return (
         stock_info.get("name")
@@ -265,12 +467,12 @@ def render_app_header(ticker: str, stock_info: dict, period_label: str, view_lab
         f"""
         <div class="app-header">
             <div class="main-title">股票数据分析平台</div>
-            <div class="sub-title">{name} <strong>{symbol}</strong></div>
+            <div class="sub-title">{safe_html(name)} <strong>{safe_html(symbol)}</strong></div>
             <div class="context-row">
-                <span class="context-pill">视图：{view_label}</span>
-                <span class="context-pill">周期：{period_label}</span>
-                <span class="context-pill">市场：{format_optional(exchange, "N/A")}</span>
-                <span class="context-pill">数据源：{format_optional(source_hint)}</span>
+                <span class="context-pill">视图：{safe_html(view_label)}</span>
+                <span class="context-pill">周期：{safe_html(period_label)}</span>
+                <span class="context-pill">市场：{safe_html(format_optional(exchange, "N/A"))}</span>
+                <span class="context-pill">数据源：{safe_html(format_optional(source_hint))}</span>
             </div>
         </div>
         """,
@@ -282,6 +484,173 @@ def section_title(title: str, note: str = ""):
     st.markdown(f'<div class="section-title">{title}</div>', unsafe_allow_html=True)
     if note:
         st.markdown(f'<div class="data-note">{note}</div>', unsafe_allow_html=True)
+
+
+QUALITY_LABELS = {
+    "verified": "Verified",
+    "partial": "Partial",
+    "estimated": "Estimated",
+    "simulated": "Simulated",
+    "unavailable": "Unavailable",
+}
+
+
+def quality_badge_html(level: str) -> str:
+    normalized = str(level or "verified").strip().lower()
+    if normalized not in QUALITY_LABELS:
+        normalized = "partial"
+    return (
+        f'<span class="quality-badge quality-{normalized}">'
+        f'{QUALITY_LABELS[normalized]}</span>'
+    )
+
+
+def render_quality_badge(level: str):
+    st.markdown(quality_badge_html(level), unsafe_allow_html=True)
+
+
+def infer_market_code(ticker: str, stock_info: dict) -> str:
+    market = stock_info.get("market") or stock_info.get("primary_exchange") or stock_info.get("exchange")
+    if market:
+        return str(market).upper()
+    raw = str(ticker or "").upper()
+    if raw.startswith(("6", "9")):
+        return "SH"
+    if raw.startswith(("0", "3")):
+        return "SZ"
+    return "US" if raw.isalpha() else "N/A"
+
+
+def infer_price_quality(stock_info: dict, price_data: pd.DataFrame) -> tuple[str, str]:
+    if stock_info.get("is_simulated") or getattr(price_data, "attrs", {}).get("is_simulated"):
+        return "simulated", "存在模拟行情或基本信息。"
+    if price_data is None or price_data.empty:
+        return "unavailable", "当前没有可用价格数据。"
+    return "verified", "行情数据可用，非交易日已压缩显示。"
+
+
+def render_terminal_cards(cards: list[dict]):
+    if not cards:
+        return
+    html_cards = []
+    for card in cards:
+        badge = card.get("badge_html", "")
+        value = safe_html(card.get("value", "N/A"))
+        label = safe_html(card.get("label", ""))
+        note = safe_html(card.get("note", ""))
+        html_cards.append(
+            f'<div class="terminal-card">'
+            f'<div class="label">{label}</div>'
+            f'<div class="value">{value} {badge}</div>'
+            f'<div class="note">{note}</div>'
+            f'</div>'
+        )
+    st.markdown(f'<div class="terminal-grid">{"".join(html_cards)}</div>', unsafe_allow_html=True)
+
+
+def build_agent_status_summary(result: dict | None) -> dict:
+    if not result:
+        return {"total": 0, "success": 0, "failed": 0, "risk_level": "N/A", "recommendation": "N/A"}
+    status = result.get("agent_execution_status") or {}
+    specialist_status = {
+        name: item for name, item in status.items()
+        if name != "ChiefStrategyAgent"
+    }
+    recommendation = result.get("final_recommendation") or {}
+    metrics = recommendation.get("comprehensive_metrics") or {}
+    return {
+        "total": len(specialist_status),
+        "success": sum(1 for item in specialist_status.values() if item.get("success")),
+        "failed": sum(1 for item in specialist_status.values() if not item.get("success")),
+        "risk_level": metrics.get("risk_level") or recommendation.get("risk_level") or "N/A",
+        "recommendation": recommendation.get("investment_recommendation") or "N/A",
+    }
+
+
+def render_workspace_right_rail(
+    ticker: str,
+    stock_info: dict,
+    price_data: pd.DataFrame,
+    news_data: list | None,
+    view_label: str,
+):
+    """Render the fixed right-side research context panel."""
+    analysis_result = st.session_state.get("last_analysis_result") or {}
+    quality_level, quality_note = infer_price_quality(stock_info, price_data)
+    source_hint = stock_info.get("data_source") or stock_info.get("source") or "configured"
+    agent_summary = build_agent_status_summary(analysis_result)
+    latest_time = "N/A"
+    if price_data is not None and not price_data.empty:
+        latest_time = pd.to_datetime(price_data["Date"].iloc[-1]).strftime("%Y-%m-%d")
+
+    rows = [
+        ("标的", ticker),
+        ("市场", infer_market_code(ticker, stock_info)),
+        ("视图", view_label),
+        ("数据源", source_hint),
+        ("更新时间", latest_time),
+        ("新闻数", len(news_data or [])),
+        ("Agent", f"{agent_summary['success']}/{agent_summary['total']} 成功"),
+        ("最终建议", agent_summary["recommendation"]),
+        ("风险等级", agent_summary["risk_level"]),
+    ]
+    row_html = "".join(
+        f'<div class="rail-row"><span>{safe_html(label)}</span><span>{safe_html(value)}</span></div>'
+        for label, value in rows
+    )
+    data_gaps = ((analysis_result.get("conflict_analysis") or {}).get("data_gaps") or [])[:3]
+    gaps_html = ""
+    if data_gaps:
+        gaps_html = '<div class="rail-title">数据缺口</div>' + "".join(
+            f'<div class="muted-small">- {safe_html(gap)}</div>'
+            for gap in data_gaps
+        )
+    st.markdown(
+        f"""
+        <div class="right-rail">
+            <div class="rail-title">投研状态</div>
+            {quality_badge_html(quality_level)}
+            <div class="muted-small" style="margin-top:0.45rem;">{safe_html(quality_note)}</div>
+            {row_html}
+            {gaps_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_agent_workflow_strip(status: dict | None = None, workflow_trace: list | None = None, selected_agents: list[str] | None = None):
+    """Render a compact LangGraph node strip for the Agent dashboard."""
+    status = status or {}
+    trace_nodes = {item.get("node") for item in (workflow_trace or []) if isinstance(item, dict)}
+    nodes = ["agent_router", *(selected_agents or list(AGENT_LABELS.keys())), "agent_quality_gate", "conflict_analyzer", "ChiefStrategyAgent"]
+    html_nodes = []
+    for node in nodes:
+        if node in status:
+            success = bool(status[node].get("success"))
+            css = "workflow-success" if success else "workflow-failed"
+            state = "成功" if success else "失败"
+        elif node in trace_nodes:
+            css = "workflow-success"
+            state = "完成"
+        else:
+            css = "workflow-waiting"
+            state = "等待"
+        if node == "agent_quality_gate":
+            label = "质量门"
+        elif node == "conflict_analyzer":
+            label = "冲突分析"
+        elif node == "agent_router":
+            label = "路由"
+        else:
+            label = normalize_agent_name(node)
+        html_nodes.append(
+            f'<div class="workflow-node {css}">'
+            f'<div class="name">{safe_html(label)}</div>'
+            f'<div class="state">{safe_html(state)}</div>'
+            f'</div>'
+        )
+    st.markdown(f'<div class="workflow-strip">{"".join(html_nodes)}</div>', unsafe_allow_html=True)
 
 
 def normalize_price_data(price_data: pd.DataFrame) -> pd.DataFrame:
@@ -374,14 +743,7 @@ def number_text(value, digits: int = 2) -> str:
 
 
 def render_insight_cards(cards: list[dict]):
-    for start in range(0, len(cards), 4):
-        chunk = cards[start:start + 4]
-        cols = st.columns(len(chunk))
-        for col, card in zip(cols, chunk):
-            col.metric(card.get("label", ""), card.get("value", "N/A"))
-            note = card.get("note")
-            if note:
-                col.caption(note)
+    render_terminal_cards(cards)
 
 
 def compute_price_insights(price_data: pd.DataFrame) -> dict:
@@ -505,6 +867,92 @@ def render_market_brief(price_data: pd.DataFrame):
     )
 
 
+def build_overview_cards(stock_info: dict, price_data: pd.DataFrame, ticker: str) -> list[dict]:
+    """Build compact research-summary cards for the overview page."""
+    quality_level, quality_note = infer_price_quality(stock_info, price_data)
+    insights = compute_price_insights(price_data)
+    latest = price_data.iloc[-1] if price_data is not None and not price_data.empty else {}
+    previous = price_data.iloc[-2] if price_data is not None and len(price_data) > 1 else latest
+    try:
+        day_change_pct = (float(latest["Close"]) - float(previous["Close"])) / float(previous["Close"]) * 100
+    except (TypeError, ValueError, ZeroDivisionError, KeyError):
+        day_change_pct = None
+    return [
+        {
+            "label": "最新价",
+            "value": number_text(latest.get("Close")) if isinstance(latest, pd.Series) else "N/A",
+            "note": f"日涨跌 {pct_text(day_change_pct)}",
+        },
+        {
+            "label": "区间涨跌",
+            "value": pct_text(insights.get("period_return")) if insights else "N/A",
+            "note": f"{insights.get('trading_days', 0)} 个交易日" if insights else "数据不足",
+        },
+        {
+            "label": "最大回撤",
+            "value": pct_text(insights.get("max_drawdown")) if insights else "N/A",
+            "note": insights.get("risk_label", "等待行情数据") if insights else "等待行情数据",
+        },
+        {
+            "label": "成交量",
+            "value": format_volume(latest.get("Volume", 0)) if isinstance(latest, pd.Series) else "N/A",
+            "note": insights.get("volume_label", "等待成交量") if insights else "等待成交量",
+        },
+        {
+            "label": "PE / PB",
+            "value": f"{format_optional(stock_info.get('pe_ratio'))} / {format_optional(stock_info.get('pb_ratio'))}",
+            "note": "来自当前数据源的估值字段。",
+        },
+        {
+            "label": "市值",
+            "value": format_optional(stock_info.get("market_cap")),
+            "note": f"{stock_display_name(stock_info, ticker)}",
+        },
+        {
+            "label": "数据质量",
+            "value": "",
+            "badge_html": quality_badge_html(quality_level),
+            "note": quality_note,
+        },
+    ]
+
+
+def render_ai_overview_panel():
+    """Show the latest AI recommendation snapshot on non-Agent pages."""
+    result = st.session_state.get("last_analysis_result") or {}
+    recommendation = result.get("final_recommendation") or {}
+    conflict = result.get("conflict_analysis") or {}
+    quality_gate = result.get("quality_gate") or {}
+    st.markdown("**AI 摘要 / 风险边界**")
+    if recommendation:
+        st.caption(f"建议：{format_optional(recommendation.get('investment_recommendation'))}")
+        metrics = recommendation.get("comprehensive_metrics") or {}
+        render_terminal_cards([
+            {"label": "风险等级", "value": format_optional(metrics.get("risk_level")), "note": "首席策略输出"},
+            {"label": "综合评分", "value": format_score(metrics.get("composite_score")), "note": "多 Agent 加权"},
+        ])
+        findings = recommendation.get("key_findings") or []
+        for finding in findings[:3]:
+            st.markdown(f"- {finding}")
+    else:
+        st.info("尚未运行 AI 分析。运行后这里会展示最终建议、风险等级与数据缺口。")
+
+    if conflict:
+        gaps = conflict.get("data_gaps") or []
+        divergences = conflict.get("score_divergences") or []
+        if gaps or divergences:
+            with st.expander("数据缺口 / 分歧", expanded=False):
+                for item in gaps[:5]:
+                    st.markdown(f"- 数据缺口：{item}")
+                for item in divergences[:5]:
+                    st.markdown(f"- 评分分歧：{item}")
+    if quality_gate:
+        st.caption(
+            f"质量门：{'通过' if quality_gate.get('passed') else '需谨慎'}；"
+            f"问题数 {quality_gate.get('issue_count', 0)}"
+        )
+
+
 def render_price_distribution(price_data: pd.DataFrame):
     if price_data.empty or len(price_data) < 5:
         return
@@ -607,6 +1055,12 @@ def show_candlestick(ticker: str, price_data: pd.DataFrame, include_analysis: bo
     # 将日期转为字符串，配合 category x 轴使用，可自动去除非交易日（周末/节假日）空白
     date_strs = price_data["Date"].dt.strftime("%Y-%m-%d").tolist()
     xaxis_cfg = _category_axis(date_strs)
+    render_terminal_cards([
+        {"label": "横轴模式", "value": "交易日压缩", "note": "周末和节假日不留空白。"},
+        {"label": "主图指标", "value": "OHLC K线", "note": "价格单位来自数据源。"},
+        {"label": "副图指标", "value": "成交量", "note": "自动格式化为万/亿股。"},
+        {"label": "复权状态", "value": "数据源默认", "note": "如需严格复权，可在数据源层扩展。"},
+    ])
 
     fig = go.Figure(
         data=[
@@ -654,19 +1108,22 @@ def show_candlestick(ticker: str, price_data: pd.DataFrame, include_analysis: bo
 def show_overview(ticker: str, stock_info: dict, price_data: pd.DataFrame, news_data: list):
     name = stock_display_name(stock_info, ticker)
     symbol = stock_info.get("symbol") or stock_info.get("code") or ticker
-    section_title(f"{name} ({symbol})")
+    section_title(f"{name} ({symbol})", "投研摘要页：价格位置、数据可信度、AI 风险提示和事件信息集中展示。")
 
     description = stock_info.get("description") or "当前数据源暂未提供公司简介。"
-    st.write(description)
+    st.caption(description)
 
-    show_price_summary(price_data)
-    section_title("市场快照", "用本地行情数据自动生成，不额外消耗 LLM 调用。")
-    render_market_brief(price_data)
-    show_candlestick(ticker, price_data, include_analysis=False)
+    render_terminal_cards(build_overview_cards(stock_info, price_data, ticker))
+
+    chart_col, summary_col = st.columns([2.2, 1])
+    with chart_col:
+        show_candlestick(ticker, price_data, include_analysis=False)
+    with summary_col:
+        render_ai_overview_panel()
 
     show_basic_information(stock_info, ticker)
 
-    section_title("最新新闻")
+    section_title("最新新闻 / 事件线索")
     render_news_brief(news_data)
     for item in news_data:
         title = item.get("title", "Untitled")
@@ -830,6 +1287,34 @@ def _render_financial_table_picker(ticker: str, available_tables: list):
     )
 
 
+def _render_valuation_panel(financial_data: dict):
+    valuation = financial_data.get("valuation_metrics") or {}
+    comparison = financial_data.get("valuation_comparison") or {}
+    metrics = comparison.get("metrics") or {}
+    cards = []
+    for key, label in [("pe", "PE"), ("pb", "PB"), ("ps", "PS")]:
+        metric = metrics.get(key) or {}
+        source_key = {"pe": "pe_ratio", "pb": "pb_ratio", "ps": "ps_ratio"}[key]
+        value = metric.get("value", valuation.get(source_key))
+        bucket = metric.get("bucket", "unavailable")
+        band = metric.get("reference_band") or {}
+        cards.append({
+            "label": label,
+            "value": format_optional(value),
+            "note": (
+                f"分档 {bucket}；参考 {band.get('low', 'N/A')} / {band.get('median', 'N/A')} / {band.get('high', 'N/A')}"
+                if band else f"分档 {bucket}"
+            ),
+        })
+    cards.append({
+        "label": "估值风险",
+        "value": format_optional(comparison.get("valuation_risk"), "待补充"),
+        "note": comparison.get("limitations") or "接入同业样本后可升级为实时分位数。",
+    })
+    section_title("估值对比", "展示 PE / PB / PS 当前值、行业参考区间与估值风险。")
+    render_terminal_cards(cards)
+
+
 def show_financial_export(ticker: str):
     try:
         financial_data = get_financial_data(ticker)
@@ -844,6 +1329,7 @@ def show_financial_export(ticker: str):
 
         section_title("财务数据", "按数据源返回的报表、比率与估值字段分组展示。")
         render_financial_visuals(financial_data)
+        _render_valuation_panel(financial_data)
 
         available_tables = _collect_financial_tables(financial_data)
         if not available_tables:
@@ -887,25 +1373,32 @@ def render_recommendation(recommendation: dict):
         unsafe_allow_html=True,
     )
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("建议", action)
-    c2.metric("置信度", confidence)
-    c3.metric("信号强度", signal_strength)
-    c4.metric("模型置信度", format_score(recommendation.get("confidence_score")))
-
     metrics = recommendation.get("comprehensive_metrics") or {}
+    data_quality = recommendation.get("data_quality") or {}
+    render_terminal_cards([
+        {"label": "建议等级", "value": action, "note": description or "首席策略 Agent 输出"},
+        {"label": "适用周期", "value": format_optional(recommendation.get("investment_horizon"), "中短期观察"), "note": "需结合用户风险偏好"},
+        {"label": "置信度", "value": confidence, "note": f"模型置信度 {format_score(recommendation.get('confidence_score'))}"},
+        {"label": "风险等级", "value": format_optional(metrics.get("risk_level")), "note": f"风险评分 {format_score(metrics.get('risk_score'))}"},
+        {"label": "信号强度", "value": signal_strength, "note": "综合多 Agent 结论"},
+        {
+            "label": "数据质量",
+            "value": "",
+            "badge_html": quality_badge_html(data_quality.get("level", "verified")),
+            "note": f"质量评分 {format_score(data_quality.get('score'))}" if data_quality else "等待数据质量评分",
+        },
+    ])
+
     if metrics:
         m1, m2, m3 = st.columns(3)
         m1.metric("综合评分", format_score(metrics.get("composite_score")))
         m2.metric("风险评分", format_score(metrics.get("risk_score")))
         m3.metric("风险等级", format_optional(metrics.get("risk_level")))
 
-    data_quality = recommendation.get("data_quality") or {}
     if data_quality:
-        q1, q2, q3 = st.columns(3)
-        q1.metric("数据质量", format_optional(data_quality.get("level")))
-        q2.metric("质量评分", format_score(data_quality.get("score")))
-        q3.metric("失败/模拟维度", len(data_quality.get("failed_agents") or []) + len(data_quality.get("simulated_agents") or []))
+        q1, q2 = st.columns(2)
+        q1.metric("失败/模拟维度", len(data_quality.get("failed_agents") or []) + len(data_quality.get("simulated_agents") or []))
+        q2.metric("不可用/估算维度", len(data_quality.get("unavailable_agents") or []) + len(data_quality.get("partial_agents") or []))
         policy = data_quality.get("decision_policy")
         if policy:
             st.caption(policy)
@@ -1011,18 +1504,31 @@ def render_agent_status(status: dict):
         )
 
     rows = []
+    cards = []
     for agent_name, item in status.items():
         success = item.get("success", False)
+        status_text = "✅ 成功" if success else "❌ 失败"
+        confidence = item.get("confidence_score")
+        cards.append({
+            "label": normalize_agent_name(agent_name),
+            "value": "成功" if success else "失败",
+            "note": (
+                f"置信度 {float(confidence):.0%}" if confidence is not None
+                else (item.get("error") or "等待结果")
+            ),
+        })
         rows.append(
             {
             "智能体": normalize_agent_name(agent_name),
-            "状态": "✅ 成功" if success else "❌ 失败",
+            "状态": status_text,
             "置信度": f"{item.get('confidence_score', 0):.0%}" if item.get('confidence_score') is not None else "N/A",
             "问题": item.get("error") or ("" if success else "分析未完成"),
             }
         )
+    render_terminal_cards(cards)
     df = pd.DataFrame(rows)
-    st.dataframe(df, width="stretch", hide_index=True)
+    with st.expander("执行状态明细", expanded=False):
+        st.dataframe(df, width="stretch", hide_index=True)
 
 
 def render_workflow_diagnostics(conflict_analysis: dict, workflow_metadata: dict = None, workflow_trace: list = None):
@@ -1163,6 +1669,8 @@ def show_agent_analysis(ticker: str, period: str):
         help="只运行选中的专业 Agent，可减少等待时间和 LLM token 消耗。",
     )
     enabled_agents = tuple(normalize_agent_selection(selected_labels) or list(AGENT_LABELS.keys()))
+    section_title("LangGraph 工作流")
+    render_agent_workflow_strip(selected_agents=list(enabled_agents))
     if not st.button("运行智能分析", type="primary"):
         st.info("点击按钮后会启动完整 LangGraph 工作流。")
         return
@@ -1175,6 +1683,7 @@ def show_agent_analysis(ticker: str, period: str):
             st.error(f"智能体工作流启动失败: {exc}")
             return
 
+    st.session_state["last_analysis_result"] = result
     _render_analysis_results(ticker, result)
 
 
@@ -1197,6 +1706,11 @@ def _render_analysis_results(ticker: str, result: dict):
         render_recommendation(recommendation)
 
     status = result.get("agent_execution_status") or {}
+    render_agent_workflow_strip(
+        status,
+        result.get("workflow_trace") or [],
+        result.get("workflow_metadata", {}).get("active_agent_names") or [],
+    )
     render_agent_status(status)
     render_workflow_diagnostics(
         result.get("conflict_analysis") or {},
@@ -1233,6 +1747,8 @@ setup_page()
 
 with st.sidebar:
     st.markdown("## 股票查询")
+    theme_mode = st.selectbox("界面主题", ["浅色投研", "深色终端"], index=0)
+    apply_theme_override(theme_mode)
     favorites = load_favorites()
     quick_symbol = ""
     if favorites:
@@ -1344,64 +1860,85 @@ def load_market_data(ticker: str, period: str, start_date=None, end_date=None):
 
 
 if view_mode in {"Knowledge QA", "Watchlist", "History", "Screener", "Portfolio", "Alerts"}:
-    render_app_header(ticker, {"symbol": ticker, "data_source": "local app state"}, period_display, VIEW_OPTIONS.get(view_mode, view_mode))
-    if view_mode == "Knowledge QA":
-        try:
-            from hengline.streamlit.st_qa import show_qa_view
+    local_info = {"symbol": ticker, "data_source": "local app state"}
+    empty_price = pd.DataFrame()
+    render_app_header(ticker, local_info, period_display, VIEW_OPTIONS.get(view_mode, view_mode))
+    content_col, rail_col = st.columns([4.2, 1.15], gap="large")
+    with content_col:
+        if view_mode == "Knowledge QA":
+            try:
+                from hengline.streamlit.st_qa import show_qa_view
 
-            show_qa_view()
-        except Exception as exc:
-            st.error(f"知识库问答加载失败: {exc}")
-    elif view_mode == "Watchlist":
-        selected_watch = render_watchlist_page(ticker)
-        if selected_watch and selected_watch != ticker:
-            st.info(f"已选择 {selected_watch}。请在侧边栏股票代码中切换后查看行情。")
-    elif view_mode == "History":
-        render_history_page()
-    elif view_mode == "Screener":
-        render_screener_page(get_stock_info, get_stock_price_data)
-    elif view_mode == "Portfolio":
-        render_portfolio_page(get_stock_info, get_stock_price_data)
-    elif view_mode == "Alerts":
-        render_alerts_page(get_stock_price_data)
+                show_qa_view()
+            except Exception as exc:
+                st.error(f"知识库问答加载失败: {exc}")
+        elif view_mode == "Watchlist":
+            selected_watch = render_watchlist_page(ticker)
+            if selected_watch and selected_watch != ticker:
+                st.info(f"已选择 {selected_watch}。请在侧边栏股票代码中切换后查看行情。")
+        elif view_mode == "History":
+            render_history_page()
+        elif view_mode == "Screener":
+            render_screener_page(get_stock_info, get_stock_price_data)
+        elif view_mode == "Portfolio":
+            render_portfolio_page(get_stock_info, get_stock_price_data)
+        elif view_mode == "Alerts":
+            render_alerts_page(get_stock_price_data)
+    with rail_col:
+        render_workspace_right_rail(
+            ticker,
+            local_info,
+            empty_price,
+            [],
+            VIEW_OPTIONS.get(view_mode, view_mode),
+        )
 else:
     with st.spinner("Loading data... (first load may take ~15 s while fetching market metrics)"):
         try:
             price_data, stock_info, news_data = load_market_data(ticker, period, start_date, end_date)
             render_app_header(ticker, stock_info, period_display, VIEW_OPTIONS.get(view_mode, view_mode))
             render_data_quality_warning(stock_info, price_data)
+            content_col, rail_col = st.columns([4.2, 1.15], gap="large")
+            with content_col:
+                if view_mode == "Overview":
+                    show_overview(ticker, stock_info, price_data, news_data)
+                elif view_mode == "Price Chart":
+                    show_price_summary(price_data)
+                    show_candlestick(ticker, price_data)
+                elif view_mode == "Technical":
+                    show_price_summary(price_data)
+                    show_technical(ticker, price_data)
+                elif view_mode == "Financial":
+                    show_financial_export(ticker)
+                elif view_mode == "AI Analysis":
+                    show_agent_analysis(ticker, period)
+                elif view_mode == "Backtest":
+                    show_price_summary(price_data)
+                    render_backtest_page(ticker, price_data)
 
-            if view_mode == "Overview":
-                show_overview(ticker, stock_info, price_data, news_data)
-            elif view_mode == "Price Chart":
-                show_price_summary(price_data)
-                show_candlestick(ticker, price_data)
-            elif view_mode == "Technical":
-                show_price_summary(price_data)
-                show_technical(ticker, price_data)
-            elif view_mode == "Financial":
-                show_financial_export(ticker)
-            elif view_mode == "AI Analysis":
-                show_agent_analysis(ticker, period)
-            elif view_mode == "Backtest":
-                show_price_summary(price_data)
-                render_backtest_page(ticker, price_data)
+                if comparison_enabled and compare_tickers:
+                    st.markdown("---")
+                    show_comparison([ticker] + compare_tickers, period)
 
-            if comparison_enabled and compare_tickers:
                 st.markdown("---")
-                show_comparison([ticker] + compare_tickers, period)
-
-            st.markdown("---")
-            section_title("数据导出")
-            if not price_data.empty:
-                st.download_button(
-                    label="下载价格数据（CSV）",
-                    data=price_data.to_csv(index=False).encode("utf-8-sig"),
-                    file_name=f"{ticker}_price_data.csv",
-                    mime="text/csv",
+                section_title("数据导出")
+                if not price_data.empty:
+                    st.download_button(
+                        label="下载价格数据（CSV）",
+                        data=price_data.to_csv(index=False).encode("utf-8-sig"),
+                        file_name=f"{ticker}_price_data.csv",
+                        mime="text/csv",
+                    )
+                else:
+                    st.info("当前没有可导出的价格数据。")
+            with rail_col:
+                render_workspace_right_rail(
+                    ticker,
+                    stock_info,
+                    price_data,
+                    news_data,
+                    VIEW_OPTIONS.get(view_mode, view_mode),
                 )
-            else:
-                st.info("当前没有可导出的价格数据。")
         except Exception as exc:
             st.error(f"数据加载失败: {exc}")
             st.info("可以尝试 300502、300308、NVDA 或 AAPL。")

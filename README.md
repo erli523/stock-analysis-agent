@@ -285,7 +285,7 @@ mindmap
 | `hengline/streamlit/st_main.py` | 页面 CSS 抽取为 `APP_CSS` 常量；`_category_axis` 统一 K线/技术/对比图的交易日压缩逻辑；拆分 `show_financial_export`、`show_agent_analysis`、`show_technical` |
 | `hengline/streamlit/st_product_features.py` | 拆分 `render_financial_visuals`（趋势/雷达）与 `render_screener_page`（代码解析/单股筛选） |
 
-重构后全部 **107 项单元测试通过**（`test_agent_fixes` 50 + `test_reflection_loop` 49 + `test_streamlit_product_features` 7 + `test_vector_store` 1），并用 `300502` 在 Streamlit 界面完成概览/技术分析等视图实测验证。
+重构后全部 **109 项单元测试通过**（`test_agent_fixes` 50 + `test_reflection_loop` 49 + `test_streamlit_product_features` 9 + `test_vector_store` 1），并用 `300502` 在 Streamlit 界面完成概览/技术分析等视图实测验证。
 
 ---
 
@@ -323,11 +323,11 @@ mindmap
 
 | 视图 | 已实现功能 |
 |------|-----------|
-| **概览** | 公司简介、最新价/涨跌幅/高低/成交量、市场快照卡片（区间涨跌、最大回撤、波动率、量能）、K 线预览、Basic Information（市值/PE/PB/IPO/行业）、新闻列表与原文链接、模拟数据警告 |
+| **概览** | 三栏投研工作台、右侧投研状态栏、数据质量 Badge、价格/回撤/量能/估值摘要卡、K 线预览、AI 摘要/风险边界、Basic Information、新闻列表与原文链接、模拟数据警告 |
 | **K 线行情** | K 线 + 成交量（非交易日压缩）、市场简报、日收益分布直方图、行情 CSV 导出 |
 | **技术分析** | MA5/20/60 均线、技术面解读卡片、技术结论文案、MACD/RSI/布林带高级图表 |
 | **财务数据** | 利润表趋势图、财务/估值雷达图、7 类财务表分组展示、逐表 CSV 下载、模拟财务数据警告 |
-| **智能体分析** | 按需勾选 Agent 维度、智能体记忆开关、LangGraph 工作流、质量门重试、执行状态表（✅/❌）、工作流诊断（共识/分歧/数据缺口）、各 Agent 明细 Tab、首席策略建议、Markdown/HTML/JSON 报告导出、对话式追问 |
+| **智能体分析** | 按需勾选 Agent 维度、智能体记忆开关、LangGraph 工作流节点条、质量门重试、Agent 状态卡、工作流诊断（共识/分歧/数据缺口）、各 Agent 明细 Tab、结构化首席策略建议、Markdown/HTML/JSON 报告导出、对话式追问 |
 | **知识库问答** | 独立 RAG 问答（需手动初始化）、示例问题、检索数量 slider、参考来源展示、问答历史 |
 | **自选股** | 列表管理、删除、跳转分析 |
 | **历史分析** | 读取 `data/output/{code}/analysis_*.json`、筛选、详情、再次导出报告 |
@@ -605,7 +605,7 @@ python -m pytest test/test_streamlit_product_features.py -q
 # 向量存储测试（1 用例，需 llama_index 环境）
 python -m pytest test/test_vector_store.py -q
 
-# 当前核心回归套件（107 用例）
+# 当前核心回归套件（109 用例）
 python -m pytest test/test_agent_fixes.py test/test_reflection_loop.py test/test_streamlit_product_features.py test/test_vector_store.py -q
 
 # 关键文件语法检查
@@ -637,7 +637,7 @@ stock-analysis-agent/
 ├── config/              # config.json 与环境变量映射
 ├── app/                 # FastAPI 应用入口（application.py）
 ├── api/                 # REST 路由（/api/analyze 等）
-├── test/                # 单元测试（核心回归 107 用例）
+├── test/                # 单元测试（核心回归 109 用例）
 ├── build_rag_index.py   # Agent 知识库索引构建
 ├── install.bat          # Windows 安装脚本
 ├── start.bat            # Windows 启动脚本
