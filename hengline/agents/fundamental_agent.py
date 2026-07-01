@@ -114,6 +114,21 @@ class FundamentalAgent(BaseAgent):
         }
 
         try:
+            def _num(value: Any, default: float = 0.0) -> float:
+                try:
+                    if pd.isna(value):
+                        return default
+                    return float(value)
+                except (TypeError, ValueError):
+                    return default
+
+            def _first_number(*values: Any, default: float = 0.0) -> float:
+                for value in values:
+                    number = _num(value, default=None)
+                    if number is not None and number != 0:
+                        return number
+                return default
+
             # 获取股票基本信息
             stock_info = self.stock_manager.get_stock_info(stock_code)
             financial_data["company_info"] = {
@@ -126,6 +141,15 @@ class FundamentalAgent(BaseAgent):
 
             # 获取财务数据
             financial_reports = self.stock_manager.get_financial_data(stock_code)
+
+            report_valuation = financial_reports.get("valuation_metrics", {})
+            financial_data["valuation_metrics"] = {
+                "market_cap": stock_info.get("market_cap") or report_valuation.get("market_cap", 0),
+                "pe_ratio": _first_number(stock_info.get("pe_ratio"), report_valuation.get("pe_ratio")),
+                "pb_ratio": _first_number(stock_info.get("pb_ratio"), report_valuation.get("pb_ratio")),
+                "ps_ratio": _first_number(stock_info.get("ps_ratio"), report_valuation.get("ps_ratio")),
+                "peg_ratio": _first_number(stock_info.get("peg_ratio"), report_valuation.get("peg_ratio")),
+            }
             
             # 财务报表数据
             financial_data["balance_sheet"] = financial_reports.get("balance_sheet", {})
@@ -149,10 +173,10 @@ class FundamentalAgent(BaseAgent):
                 "quick_ratio": financial_reports.get("financial_ratios", {}).get("quick_ratio", 0),
                 
                 # 估值指标
-                "pe_ratio": financial_reports.get("valuation_metrics", {}).get("pe_ratio", 0),
-                "pb_ratio": financial_reports.get("valuation_metrics", {}).get("pb_ratio", 0),
-                "ps_ratio": financial_reports.get("valuation_metrics", {}).get("ps_ratio", 0),
-                "peg_ratio": financial_reports.get("valuation_metrics", {}).get("peg_ratio", 0)
+                "pe_ratio": financial_data["valuation_metrics"].get("pe_ratio", 0),
+                "pb_ratio": financial_data["valuation_metrics"].get("pb_ratio", 0),
+                "ps_ratio": financial_data["valuation_metrics"].get("ps_ratio", 0),
+                "peg_ratio": financial_data["valuation_metrics"].get("peg_ratio", 0)
             }
 
             # 尝试直接从financial_reports获取收入报表数据
@@ -209,15 +233,6 @@ class FundamentalAgent(BaseAgent):
                 except Exception as e:
                     debug(f"处理现金流数据时出错: {str(e)}")
             
-            # 检查是否需要使用模拟数据（当财务数据为空或不完整时）
-            def _num(value: Any, default: float = 0.0) -> float:
-                try:
-                    if pd.isna(value):
-                        return default
-                    return float(value)
-                except (TypeError, ValueError):
-                    return default
-
             income_frame = financial_reports.get("income_statement")
             if isinstance(income_frame, pd.DataFrame) and not income_frame.empty:
                 income_latest = income_frame.sort_values("statDate").iloc[-1] if "statDate" in income_frame.columns else income_frame.iloc[-1]
@@ -257,13 +272,21 @@ class FundamentalAgent(BaseAgent):
 
             if ratio_latest is not None or growth_latest is not None or balance_latest is not None:
                 current_ratios = financial_data.get("financial_ratios", {}) if isinstance(financial_data.get("financial_ratios"), dict) else {}
+                total_assets = _num(balance_latest.get("totalAssets")) if balance_latest is not None else 0.0
+                total_liabilities = _num(balance_latest.get("totalLiability")) if balance_latest is not None else 0.0
+                if total_liabilities == 0 and balance_latest is not None:
+                    total_liabilities = _num(balance_latest.get("totalLiabilities"))
+                total_equity = _num(balance_latest.get("totalEquity")) if balance_latest is not None else 0.0
+                debt_to_equity = total_liabilities / total_equity if total_liabilities and total_equity else 0.0
+                debt_to_assets = total_liabilities / total_assets if total_liabilities and total_assets else 0.0
                 current_ratios.update({
                     "profit_margin": _num(financial_data["income_statement"].get("net_income")) / _num(financial_data["income_statement"].get("total_revenue"), 1.0) if _num(financial_data["income_statement"].get("total_revenue")) else 0.0,
                     "operating_margin": _num(financial_data["income_statement"].get("operating_income")) / _num(financial_data["income_statement"].get("total_revenue"), 1.0) if _num(financial_data["income_statement"].get("total_revenue")) else 0.0,
                     "return_on_equity": _num(ratio_latest.get("dupontROE")) if ratio_latest is not None else 0.0,
-                    "revenue_growth": _num(growth_latest.get("YOYAsset")) if growth_latest is not None else 0.0,
+                    "revenue_growth": _first_number(growth_latest.get("YOYEquity") if growth_latest is not None else None),
                     "earnings_growth": _num(growth_latest.get("YOYNI")) if growth_latest is not None else 0.0,
-                    "debt_to_equity": _num(balance_latest.get("assetToEquity")) if balance_latest is not None else 0.0,
+                    "debt_to_equity": debt_to_equity,
+                    "debt_to_assets": debt_to_assets,
                     "current_ratio": _num(balance_latest.get("currentRatio")) if balance_latest is not None else 0.0,
                     "quick_ratio": _num(balance_latest.get("quickRatio")) if balance_latest is not None else 0.0
                 })

@@ -339,6 +339,34 @@ class IndustryMacroAgent(BaseAgent):
         Returns:
             Dict[str, Any]: 结构化的结果
         """
+        def _clamp_score(value: Any, default: float = 50.0) -> float:
+            try:
+                score = float(value)
+            except (TypeError, ValueError):
+                score = default
+            return max(0.0, min(100.0, score))
+
+        sector_performance = industry_data.get("sector_performance", {}) or {}
+        period_performance = sector_performance.get("period_performance")
+        derived_industry_score = _clamp_score(
+            llm_analysis.get("industry_score"),
+            50.0 + float(period_performance or 0) if period_performance is not None else 50.0,
+        )
+        macro_sentiment = macro_data.get("market_sentiment", {}) or {}
+        major_indices = macro_sentiment.get("major_indices", {}) or {}
+        if major_indices:
+            index_scores = [
+                50.0 + float(item.get("1m_performance", 0))
+                for item in major_indices.values()
+                if isinstance(item, dict)
+            ]
+            derived_macro_score = _clamp_score(
+                llm_analysis.get("economic_score"),
+                sum(index_scores) / len(index_scores) if index_scores else 50.0,
+            )
+        else:
+            derived_macro_score = _clamp_score(llm_analysis.get("economic_score"), 50.0)
+
         result = self.get_result_template()
         result.update({
             "stock_code": stock_code,
@@ -353,6 +381,22 @@ class IndustryMacroAgent(BaseAgent):
             "opportunities": llm_analysis.get("opportunities", []),
             "threats": llm_analysis.get("threats", []),
             "confidence_score": llm_analysis.get("confidence_score", 0.85),
+            "overall_score": round((derived_industry_score + derived_macro_score) / 2, 1),
+            "industry_analysis": {
+                "industry_score": round(derived_industry_score, 1),
+                "sector": industry_data.get("sector", ""),
+                "industry": industry_data.get("industry", ""),
+                "sector_performance": sector_performance,
+                "outlook": llm_analysis.get("industry_outlook", ""),
+            },
+            "macro_analysis": {
+                "economic_score": round(derived_macro_score, 1),
+                "market_sentiment": macro_sentiment,
+                "key_macro_trends": macro_data.get("key_macro_trends", []),
+                "data_source": macro_data.get("data_source", ""),
+            },
+            "data_available": bool(sector_performance or major_indices or llm_analysis.get("key_findings")),
+            "data_note": "" if (sector_performance or major_indices) else "行业/宏观量化数据不足，结论主要依赖可用公司信息与LLM文本分析。",
             "industry_summary": {
                 "sector_performance": industry_data.get("sector_performance", {}),
                 "market_sentiment": macro_data.get("market_sentiment", {})

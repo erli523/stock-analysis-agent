@@ -503,6 +503,15 @@ class ChiefStrategyAgent(BaseAgent):
         # 获取建议详情
         recommendation = llm_analysis.get("investment_recommendation", "持有")
         recommendation_details = self.investment_recommendations.get(recommendation, {})
+        key_findings = llm_analysis.get("key_findings", [])
+        if not isinstance(key_findings, list):
+            key_findings = [str(key_findings)]
+        if not key_findings:
+            summary = llm_analysis.get("analysis_summary") or llm_analysis.get("recommendation_details")
+            if summary:
+                key_findings = [str(summary)]
+            else:
+                key_findings = [f"综合评分 {composite_score:.2f}，最终建议为{recommendation}。"]
         
         result.update({
             "stock_code": stock_code,
@@ -517,7 +526,14 @@ class ChiefStrategyAgent(BaseAgent):
             "key_monitoring_metrics": llm_analysis.get("key_monitoring_metrics", []),
             "risk_disclosure": llm_analysis.get("risk_disclosure", ""),
             "confidence_score": llm_analysis.get("confidence_score", 0.90),
+            "key_findings": key_findings,
             "analysis_summary": llm_analysis.get("analysis_summary", ""),
+            "detailed_analysis": {
+                "recommendation_details": llm_analysis.get("recommendation_details", ""),
+                "suitable_investors": llm_analysis.get("suitable_investors", ""),
+                "position_suggestion": llm_analysis.get("position_suggestion", ""),
+                "risk_disclosure": llm_analysis.get("risk_disclosure", ""),
+            },
             "comprehensive_metrics": {
                 "composite_score": round(composite_score, 2),
                 "risk_score": round(overall_risk["risk_score"], 2),

@@ -290,6 +290,30 @@ class StockDataManager:
             error(f"Mock data failed for {method_name}: {exc}")
         return None
 
+    @staticmethod
+    def _mark_simulated_result(result: Any, method_name: str):
+        if isinstance(result, pd.DataFrame):
+            result.attrs["is_simulated"] = True
+            result.attrs["data_source"] = "mock"
+            return result
+        if isinstance(result, dict):
+            marked = dict(result)
+            marked["is_simulated"] = True
+            marked["data_source"] = "mock"
+            marked["data_note"] = "Online data sources failed; this result is simulated mock data."
+            for value in marked.values():
+                if isinstance(value, pd.DataFrame):
+                    value.attrs["is_simulated"] = True
+                    value.attrs["data_source"] = "mock"
+            return marked
+        if isinstance(result, list):
+            for item in result:
+                if isinstance(item, dict):
+                    item.setdefault("is_simulated", True)
+                    item.setdefault("data_source", "mock")
+            return result
+        return result
+
     def _get_data_with_fallback(self, method_name: str, *args, **kwargs):
         cache_key = self._cache_key(method_name, *args, **kwargs)
         cached = self._cache.get(cache_key)
@@ -319,6 +343,7 @@ class StockDataManager:
         info("Online data sources failed; returning mock data")
         mock_result = self._load_mock_data(method_name, *args, **kwargs)
         if mock_result is not None:
+            mock_result = self._mark_simulated_result(mock_result, method_name)
             self._cache[cache_key] = (mock_result, time.time())
             return mock_result
 
@@ -346,9 +371,19 @@ class StockDataManager:
             return {}
 
         valid_financial_data = {}
+        is_simulated = bool(financial_data.get("is_simulated"))
         for key, df in financial_data.items():
             if isinstance(df, pd.DataFrame) and not df.empty and len(df.columns) > 0:
+                if is_simulated:
+                    df.attrs["is_simulated"] = True
+                    df.attrs["data_source"] = "mock"
                 valid_financial_data[key] = df
+        if is_simulated:
+            valid_financial_data["__metadata__"] = {
+                "is_simulated": True,
+                "data_source": "mock",
+                "data_note": financial_data.get("data_note", "Financial data is simulated mock data."),
+            }
         return valid_financial_data
 
     def get_stock_realtime_data(self, stock_code: str) -> Dict[str, Any]:

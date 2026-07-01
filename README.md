@@ -27,6 +27,8 @@
 | 📚 **RAG 知识库** | LlamaIndex + DashScope Embedding，16 篇专业文档精准检索 |
 | 📊 **多源数据** | BaoStock 为主，AkShare / YFinance / 模拟数据多级降级 |
 | 🎨 **可视化界面** | Streamlit + Plotly 交互式 K 线、技术指标、财务分析图表 |
+| 🧭 **产品化工作台** | 自选股、历史分析、知识库问答、报告导出已接入主界面 |
+| 🧪 **按需 Agent** | UI 可选择只运行技术/基本面/资金流等指定维度，减少等待和 token 消耗 |
 | 🔌 **多 LLM 支持** | DeepSeek / Qwen / OpenAI / Ollama 一键切换 |
 | 💾 **智能缓存** | 10 分钟数据缓存 + 共享 StockDataManager，避免重复 API 调用 |
 
@@ -286,9 +288,21 @@ streamlit run hengline/streamlit/st_main.py
 |------|------|
 | **Overview** | 股票基本信息（市值、PE、PB、IPO日期）+ 最新新闻 |
 | **Price Chart** | 交互式 K 线图（非交易日已过滤）+ 成交量 + 均线 |
-| **Technical** | MACD、RSI、布林带等技术指标图 |
-| **Financial** | 营收、净利润、ROE、现金流等财务指标 |
-| **AI Analysis** | 7 个 Agent 并行分析结果 + 首席策略综合报告 |
+| **Technical** | 均线、MACD、RSI、布林带、成交量等技术指标图 |
+| **Financial** | 财务趋势图、财务/估值雷达图、分组财务表格和 CSV 导出 |
+| **AI Analysis** | 可选维度 Agent 分析 + 首席策略综合报告 + Markdown/JSON 导出 |
+| **Knowledge QA** | 接入 `st_qa.py`，面向 `knowledge_base/` 的 RAG 投资知识问答 |
+| **Watchlist** | 本地自选股列表，保存到 `data/user/favorites.json` |
+| **History** | 读取 `data/output/{stock_code}/analysis_*.json`，浏览历史 AI 分析并再次导出报告 |
+
+### 新增产品能力
+
+- **自选股**：侧边栏可加入/移除当前股票，`Watchlist` 页面可集中管理。
+- **历史分析**：Streamlit 端运行 AI 分析后会自动保存 JSON 到 `data/output/`，`History` 页面支持筛选和查看详情。
+- **AI 报告导出**：AI 分析和历史详情均支持下载 Markdown 报告与原始 JSON。
+- **对齐 README 的技术指标**：技术页新增 MACD、RSI、布林带图，横轴继续按交易日压缩。
+- **财务图表**：财务页在表格之外新增利润表关键指标趋势和财务/估值雷达图。
+- **按维度选择分析**：AI 分析页可勾选需要运行的专业 Agent，避免每次都全量调用。
 
 ---
 
@@ -347,27 +361,21 @@ knowledge_base/
 
 ---
 
-## 🔌 API 调用示例
+## 🧪 测试
 
-```python
-from api.stock_agent_api import StockAgentAPI
+推荐在 `stock-agent` conda 环境下运行：
 
-api = StockAgentAPI()
+```bash
+conda activate stock-agent
 
-# 单维度分析
-result = api.analyze_stock(
-    stock_code="300502",
-    analysis_type="technical"   # technical / fundamental / comprehensive
-)
+# 新增产品功能 helper 测试
+python test/test_streamlit_product_features.py
 
-# 综合分析（触发全部 7 个 Agent）
-result = api.analyze_stock(
-    stock_code="300502",
-    analysis_type="comprehensive",
-    time_range="1y"
-)
+# Agent reflection / conflict workflow 回归测试
+python test/test_reflection_loop.py
 
-print(result["chief_strategy"]["investment_recommendation"])
+# 关键文件语法检查
+python -m py_compile hengline/streamlit/st_main.py hengline/streamlit/st_product_features.py hengline/agents/agent_coordinator.py
 ```
 
 ---
@@ -381,11 +389,13 @@ stock-analysis-agent/
 │   ├── client/          # LLM 客户端（DeepSeek/Qwen/OpenAI/Ollama）
 │   ├── rag/             # RAG 链与向量存储管理
 │   ├── stock/           # 数据源（BaoStock/AkShare/YFinance 等）
-│   ├── streamlit/       # 前端界面（K线/技术/财务/AI分析）
+│   ├── streamlit/       # 前端界面（K线/技术/财务/AI分析/问答/历史/自选股）
 │   ├── tools/           # LlamaIndex 工具、缓存、JSON解析
 │   └── prompts/         # 各 Agent 的 YAML 提示词模板
 ├── knowledge_base/      # RAG 知识库文档（16 篇）
 ├── data/embeddings/     # 向量索引持久化（自动生成，不提交 git）
+├── data/output/         # AI 分析历史（运行后自动生成）
+├── data/user/           # 自选股等本地用户状态（运行后自动生成）
 ├── config/              # 配置文件
 ├── api/                 # FastAPI 接口
 ├── test/                # 单元测试（Agent 修复、Reflection Loop 共 60+ 用例）
@@ -413,6 +423,8 @@ stock-analysis-agent/
 | **K 线图优化** | 过滤非交易日间隙（`xaxis.type="category"`），修复周末空白问题 |
 | **基本信息修复** | 修复 Overview 页面市值、PE(TTM)、PB(MRQ) 不显示的问题，重排 BaoStock API 调用顺序避免 session 污染 |
 | **知识库管理 UI** | Streamlit 侧边栏新增知识库状态显示和一键重建索引按钮 |
+| **产品功能接入** | 主界面新增知识库问答、自选股、历史分析、AI 报告导出、按维度选择 Agent |
+| **图表能力补齐** | 技术页新增 MACD/RSI/布林带，财务页新增趋势图和雷达图 |
 | **索引构建脚本** | 新增 `build_rag_index.py`，支持 `--rebuild` 参数，方便首次部署和文档更新 |
 | **Agent 系统全面体检** | 修复首席策略评分字段错位、Sentiment/ESG/Fundamental 随机数据造假、FundFlow 阈值逻辑错误、子 Agent 失败无 UI 提示等 P0-P2 级问题 |
 | **Reflection Loop** | Agent 输出校验失败后自动重试（携带错误上下文），新增 ConflictAnalyzer 冲突检测节点，差异化超时与共享数据管理器 |
