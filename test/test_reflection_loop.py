@@ -358,6 +358,93 @@ class TestR4_R9_CoordinatorReflection(unittest.TestCase):
 
 
 # ════════════════════════════════════════════════════════════════════════
+# R9B  LangGraph 拓扑与执行轨迹
+# ════════════════════════════════════════════════════════════════════════
+class TestR9B_LangGraphDiagnostics(unittest.TestCase):
+
+    def test_merge_lists_keeps_parallel_trace_events(self):
+        from hengline.agents.agent_coordinator import merge_lists
+
+        merged = merge_lists([{"node": "A"}], [{"node": "B"}])
+        self.assertEqual([item["node"] for item in merged], ["A", "B"])
+
+    def test_workflow_topology_describes_fan_out_fan_in_graph(self):
+        from hengline.agents.agent_coordinator import AgentCoordinator
+
+        coord = object.__new__(AgentCoordinator)
+        coord.specialist_agent_names = ["TechnicalAgent", "FundamentalAgent"]
+
+        topology = coord.get_workflow_topology()
+        self.assertIn({"from": "START", "to": "TechnicalAgent"}, topology["edges"])
+        self.assertIn({"from": "TechnicalAgent", "to": "conflict_analyzer"}, topology["edges"])
+        self.assertIn({"from": "conflict_analyzer", "to": "ChiefStrategyAgent"}, topology["edges"])
+        self.assertEqual(topology["reducers"]["agent_results"], "merge_dicts")
+        self.assertEqual(topology["reducers"]["workflow_trace"], "merge_lists")
+
+    def test_conflict_analyzer_returns_workflow_trace(self):
+        from hengline.agents.base_agent import AgentResult
+        from hengline.agents.agent_coordinator import AgentCoordinator
+
+        coord = object.__new__(AgentCoordinator)
+        coord.agents = {}
+        node_fn = coord._create_conflict_analyzer_node()
+
+        result = node_fn({
+            "agent_results": {
+                "TechnicalAgent": AgentResult(
+                    agent_name="TechnicalAgent",
+                    success=True,
+                    confidence_score=0.8,
+                    result={
+                        "signal_strength": "bullish",
+                        "confidence_score": 0.8,
+                        "key_findings": ["x"],
+                    },
+                )
+            }
+        })
+
+        trace = result["workflow_trace"]
+        self.assertEqual(trace[0]["node"], "conflict_analyzer")
+        self.assertEqual(trace[0]["event"], "completed")
+        self.assertIn("consensus_direction", trace[0])
+
+    def test_report_includes_workflow_trace_and_topology(self):
+        from hengline.agents.base_agent import AgentResult
+        from hengline.agents.agent_coordinator import AgentCoordinator
+
+        coord = object.__new__(AgentCoordinator)
+        coord.specialist_agent_names = ["TechnicalAgent"]
+
+        final_state = {
+            "stock_code": "300502",
+            "analysis_start_time": "2026-07-01T00:00:00",
+            "agent_results": {
+                "TechnicalAgent": AgentResult(
+                    agent_name="TechnicalAgent",
+                    success=True,
+                    confidence_score=0.8,
+                    result={"key_findings": ["x"]},
+                )
+            },
+            "conflict_analysis": {"consensus_direction": "偏多"},
+            "workflow_trace": [{"node": "TechnicalAgent", "event": "completed"}],
+            "final_result": AgentResult(
+                agent_name="ChiefStrategyAgent",
+                success=True,
+                confidence_score=0.8,
+                result={"investment_recommendation": "持有", "key_findings": ["x"]},
+            ),
+        }
+
+        report = coord._generate_analysis_report(final_state)
+        self.assertEqual(report["workflow_trace"], final_state["workflow_trace"])
+        self.assertIn("topology", report["workflow_metadata"])
+        self.assertIn({"from": "START", "to": "TechnicalAgent"},
+                      report["workflow_metadata"]["topology"]["edges"])
+
+
+# ════════════════════════════════════════════════════════════════════════
 # R10-R11  ChiefStrategyAgent 接受冲突分析
 # ════════════════════════════════════════════════════════════════════════
 class TestR10_R11_ChiefConflictAnalysis(unittest.TestCase):
@@ -444,6 +531,7 @@ def run_all():
     for cls in [
         TestR1_R3_BaseAgentReflection,
         TestR4_R9_CoordinatorReflection,
+        TestR9B_LangGraphDiagnostics,
         TestR10_R11_ChiefConflictAnalysis,
     ]:
         suite.addTests(loader.loadTestsFromTestCase(cls))

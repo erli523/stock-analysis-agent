@@ -960,18 +960,32 @@ def render_agent_status(status: dict):
     st.dataframe(df, width="stretch", hide_index=True)
 
 
-def render_workflow_diagnostics(conflict_analysis: dict, workflow_metadata: dict = None):
-    if not conflict_analysis and not workflow_metadata:
+def render_workflow_diagnostics(conflict_analysis: dict, workflow_metadata: dict = None, workflow_trace: list = None):
+    if not conflict_analysis and not workflow_metadata and not workflow_trace:
         return
 
     section_title("工作流诊断", "展示 LangGraph 汇总前的共识方向、分歧和数据缺口。")
     if workflow_metadata:
         specialists = workflow_metadata.get("specialist_agents") or []
         execution_model = workflow_metadata.get("execution_model") or "unknown"
+        topology = workflow_metadata.get("topology") or {}
+        edge_count = len(topology.get("edges") or [])
         st.caption(
             f"执行模型：{execution_model}；专家节点：{len(specialists)}；"
-            f"汇总节点：{workflow_metadata.get('join_node', 'N/A')} -> {workflow_metadata.get('final_node', 'N/A')}"
+            f"汇总节点：{workflow_metadata.get('join_node', 'N/A')} -> {workflow_metadata.get('final_node', 'N/A')}；"
+            f"LangGraph 边数：{edge_count}"
         )
+        if topology:
+            with st.expander("LangGraph 拓扑", expanded=False):
+                edge_rows = topology.get("edges") or []
+                if edge_rows:
+                    st.dataframe(pd.DataFrame(edge_rows), width="stretch", hide_index=True)
+                limitations = topology.get("current_limitations") or []
+                if limitations:
+                    st.caption("当前边界：" + "；".join(limitations))
+    if workflow_trace:
+        with st.expander("节点执行轨迹", expanded=False):
+            st.dataframe(pd.DataFrame(workflow_trace), width="stretch", hide_index=True)
     if not conflict_analysis:
         return
     c1, c2, c3 = st.columns(3)
@@ -1119,7 +1133,11 @@ def _render_analysis_results(ticker: str, result: dict):
 
     status = result.get("agent_execution_status") or {}
     render_agent_status(status)
-    render_workflow_diagnostics(result.get("conflict_analysis") or {}, result.get("workflow_metadata") or {})
+    render_workflow_diagnostics(
+        result.get("conflict_analysis") or {},
+        result.get("workflow_metadata") or {},
+        result.get("workflow_trace") or [],
+    )
     render_agent_details(result.get("detailed_results") or {}, status)
 
     if result:

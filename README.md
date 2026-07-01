@@ -21,7 +21,7 @@
 
 | 特性 | 说明 |
 |------|------|
-| 🧠 **多 Agent 并行** | LangGraph 编排 6 个专业 Agent + 1 首席策略 Agent，Map-Reduce 并行执行，信号量控制并发（默认 3）防止 LLM 限流 |
+| 🧠 **多 Agent 并行** | LangGraph 编排 6 个专业 Agent + 1 首席策略 Agent，采用 fan-out/fan-in 工作流：专业 Agent 并行执行，ConflictAnalyzer 汇合，再交给首席策略 Agent 综合研判 |
 | 🔁 **Reflection Loop** | Agent 输出结构校验失败时自动携带错误原因重试（最多 2 次），大幅降低 JSON 解析失败率 |
 | ⚖️ **冲突检测** | 独立的 ConflictAnalyzer 节点量化各 Agent 评分分歧、数据缺口，供首席策略参考 |
 | ⏱️ **差异化超时** | 每个 Agent 独立超时（可用环境变量覆盖），慢维度不拖累整体、快维度不浪费等待 |
@@ -48,7 +48,7 @@ flowchart TD
 
     subgraph Coord["🎯 Agent 协调器 (LangGraph)"]
         direction LR
-        Map["Map 阶段\n并行分发"]
+        Map["fan-out 阶段\n并行分发"]
     end
 
     Coord --> T["📈 技术分析 Agent"]
@@ -117,6 +117,15 @@ flowchart TD
 | **评分归一化** | `_compute_agent_score` | 冲突检测节点把 6 个 Agent 的异构输出统一映射到 0-100，用于分歧检测与共识判断 |
 | **按需运行** | `enabled_agents` | UI 勾选或 CLI `--agents` 指定后，只构建/运行选中的专业 Agent |
 | **失败隔离** | `_generate_analysis_report` | 单个 Agent 失败仅跳过该维度并在 UI 标注，不影响其余维度与最终汇总 |
+| **拓扑诊断** | `workflow_metadata.topology` | 最终报告返回实际节点、边、reducer 和当前边界，UI 可展开查看 LangGraph 执行链路 |
+| **节点轨迹** | `workflow_trace` | 每个专业 Agent、ConflictAnalyzer、ChiefStrategyAgent 完成时写入 trace，便于定位超时、失败和重试次数 |
+
+**当前 LangGraph 实现边界：**
+
+- 已使用 `StateGraph`、`START`/`END`、并行 fan-out、fan-in 汇合节点，以及 `Annotated` reducer 合并并行状态。
+- Reflection Loop 目前在每个节点内部完成，而不是用 LangGraph 条件边建成显式循环；这样实现更简单，也方便保持每个 Agent 的 prompt 修正上下文。
+- 当前 UI/API 返回最终报告与节点轨迹，尚未接入 LangGraph 事件流式输出。
+- 当前没有配置持久化 checkpointer，因此工作流失败后不能从中间节点恢复；后续可接入 `MemorySaver` 或数据库 checkpointer 做断点续跑。
 
 ---
 
@@ -247,7 +256,7 @@ mindmap
 |------|------|------|
 | v1 | Map-Reduce | 6 个 Agent 并行执行，直接汇总给首席策略，无容错、无重试 |
 | v2 | + Bug 修复 | 修复 RAG 检索空片段、Streamlit 单例缓存、评分字段错位、随机数据造假等问题 |
-| v3（当前） | **Reflection Loop** | 每个 Agent 内置"执行 → 校验 → 重试"闭环；新增 ConflictAnalyzer 冲突检测节点；差异化超时；共享 `StockDataManager` |
+| v3（当前） | **LangGraph fan-out/fan-in + Reflection Loop** | `StateGraph` 并行分发到专业 Agent，使用 reducer 合并结果与执行轨迹，ConflictAnalyzer 汇合后交给首席策略 Agent；每个 Agent 内置"执行 → 校验 → 重试"闭环 |
 
 **核心收益：**
 
@@ -256,7 +265,7 @@ mindmap
 - ✅ 各 Agent 差异化超时（基本面 120s / ESG 45s），避免慢 Agent 拖累整体或快 Agent 超时浪费
 - ✅ 6 个 Agent 共享一个 `StockDataManager` 实例，避免重复拉取同一股票数据
 
-详见 `hengline/agents/agent_coordinator.py`（`REFLECTION_MAX_RETRIES`、`_create_conflict_analyzer_node`、`_create_agent_node`）与 `test/test_reflection_loop.py`（31 项 Reflection 验收测试）。
+详见 `hengline/agents/agent_coordinator.py`（`REFLECTION_MAX_RETRIES`、`_create_conflict_analyzer_node`、`get_workflow_topology`、`workflow_trace`）与 `test/test_reflection_loop.py`（Reflection、冲突检测、LangGraph 拓扑验收测试）。
 
 ### 代码质量与可维护性
 
@@ -269,7 +278,7 @@ mindmap
 | `hengline/streamlit/st_main.py` | 页面 CSS 抽取为 `APP_CSS` 常量；`_category_axis` 统一 K线/技术/对比图的交易日压缩逻辑；拆分 `show_financial_export`、`show_agent_analysis`、`show_technical` |
 | `hengline/streamlit/st_product_features.py` | 拆分 `render_financial_visuals`（趋势/雷达）与 `render_screener_page`（代码解析/单股筛选） |
 
-重构后全部 **76 项单元测试通过**（`test_agent_fixes` 38 + `test_reflection_loop` 31 + `test_streamlit_product_features` 6 + `test_vector_store` 1），并用 `300502` 在 Streamlit 界面完成概览/技术分析等视图实测验证。
+重构后全部 **80 项单元测试通过**（`test_agent_fixes` 38 + `test_reflection_loop` 35 + `test_streamlit_product_features` 6 + `test_vector_store` 1），并用 `300502` 在 Streamlit 界面完成概览/技术分析等视图实测验证。
 
 ---
 

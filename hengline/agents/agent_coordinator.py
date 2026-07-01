@@ -34,6 +34,13 @@ def merge_dicts(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any]:
     return merged
 
 
+def merge_lists(left: Optional[List[Dict[str, Any]]], right: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Append parallel LangGraph trace updates without losing sibling node events."""
+    merged = list(left or [])
+    merged.extend(right or [])
+    return merged
+
+
 REFLECTION_MAX_RETRIES = 2
 
 AGENT_TIMEOUTS: Dict[str, int] = {
@@ -53,6 +60,7 @@ class AgentState(TypedDict, total=False):
     agent_params: Dict[str, Any]
     chief_params: Dict[str, Any]
     agent_results: Annotated[Dict[str, AgentResult], merge_dicts]
+    workflow_trace: Annotated[List[Dict[str, Any]], merge_lists]
     conflict_analysis: Optional[Dict[str, Any]]
     final_result: Optional[AgentResult]
     analysis_start_time: str
@@ -190,6 +198,56 @@ class AgentCoordinator:
             raise
 
     @staticmethod
+    def _trace_event(node: str, event: str, **payload) -> Dict[str, Any]:
+        """Create a compact workflow event for UI/API diagnostics."""
+        clean_payload = {key: value for key, value in payload.items() if value is not None}
+        return {
+            "node": node,
+            "event": event,
+            "timestamp": datetime.now().isoformat(),
+            **clean_payload,
+        }
+
+    def get_workflow_topology(self) -> Dict[str, Any]:
+        """Return the concrete LangGraph topology built for this coordinator."""
+        edges = []
+        for name in self.specialist_agent_names:
+            edges.append({"from": "START", "to": name})
+            edges.append({"from": name, "to": "conflict_analyzer"})
+        edges.extend([
+            {"from": "conflict_analyzer", "to": "ChiefStrategyAgent"},
+            {"from": "ChiefStrategyAgent", "to": "END"},
+        ])
+
+        return {
+            "nodes": [
+                "START",
+                *self.specialist_agent_names,
+                "conflict_analyzer",
+                "ChiefStrategyAgent",
+                "END",
+            ],
+            "edges": edges,
+            "reducers": {
+                "agent_results": "merge_dicts",
+                "workflow_trace": "merge_lists",
+            },
+            "enabled_specialists": list(self.specialist_agent_names),
+            "langgraph_features": [
+                "StateGraph",
+                "parallel fan-out from START",
+                "reducer-based parallel state merge",
+                "fan-in conflict analysis node",
+                "final synthesis node",
+            ],
+            "current_limitations": [
+                "reflection retry runs inside each node instead of conditional graph loops",
+                "no persisted LangGraph checkpoint store is configured",
+                "UI/API currently return final results instead of streaming node events",
+            ],
+        }
+
+    @staticmethod
     def _compute_agent_score(agent_name: str, result_dict: dict) -> Optional[float]:
         """Extract a 0-100 score from each specialist result where possible."""
         if not result_dict or not result_dict.get("success", False):
@@ -321,7 +379,20 @@ class AgentCoordinator:
                 ),
             }
             info(f"Conflict analysis complete: {conflict_result['conflict_summary']}")
-            return {"conflict_analysis": conflict_result}
+            return {
+                "conflict_analysis": conflict_result,
+                "workflow_trace": [
+                    self._trace_event(
+                        "conflict_analyzer",
+                        "completed",
+                        consensus_direction=consensus,
+                        average_score=round(average_score, 1),
+                        divergences=len(score_divergences),
+                        failed_agents=len(failed_agents),
+                        data_gaps=len(data_gaps),
+                    )
+                ],
+            }
 
         return conflict_analyzer_node
 
@@ -392,7 +463,19 @@ class AgentCoordinator:
                 )
 
             debug(f"{agent_name} node completed; success={last_result.success}")
-            return {"agent_results": {agent_name: last_result}}
+            return {
+                "agent_results": {agent_name: last_result},
+                "workflow_trace": [
+                    self._trace_event(
+                        agent_name,
+                        "completed",
+                        success=last_result.success,
+                        attempts=attempt + 1,
+                        confidence_score=last_result.confidence_score,
+                        error=last_result.error_message if not last_result.success else None,
+                    )
+                ],
+            }
 
         return agent_node
 
@@ -480,7 +563,19 @@ class AgentCoordinator:
                     chief_agent.clear_reflection_hint()
 
             debug("ChiefStrategyAgent node completed")
-            return {"final_result": result}
+            return {
+                "final_result": result,
+                "workflow_trace": [
+                    self._trace_event(
+                        "ChiefStrategyAgent",
+                        "completed",
+                        success=result.success if result else False,
+                        attempts=attempt + 1,
+                        confidence_score=result.confidence_score if result else 0.0,
+                        error=result.error_message if result and not result.success else None,
+                    )
+                ],
+            }
 
         return chief_node
 
@@ -495,6 +590,7 @@ class AgentCoordinator:
                 agent_params=kwargs.get("agent_params", {}),
                 chief_params=kwargs.get("chief_params", {}),
                 agent_results={},
+                workflow_trace=[],
                 conflict_analysis=None,
                 final_result=None,
                 analysis_start_time=analysis_start_time,
@@ -549,11 +645,13 @@ class AgentCoordinator:
             "final_recommendation": {},
             "detailed_results": {},
             "conflict_analysis": final_state.get("conflict_analysis", {}) or {},
+            "workflow_trace": final_state.get("workflow_trace", []) or [],
             "workflow_metadata": {
                 "specialist_agents": self.specialist_agent_names,
                 "join_node": "conflict_analyzer",
                 "final_node": "ChiefStrategyAgent",
                 "execution_model": "parallel_specialists_then_synthesis",
+                "topology": self.get_workflow_topology(),
             },
         }
 
