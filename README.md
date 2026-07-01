@@ -296,7 +296,7 @@ python main.py alerts-check --json
 | **Price Chart** | 交互式 K 线图（非交易日已过滤）+ 成交量 + 均线 |
 | **Technical** | 均线、MACD、RSI、布林带、成交量等技术指标图 |
 | **Financial** | 财务趋势图、财务/估值雷达图、分组财务表格和 CSV 导出 |
-| **AI Analysis** | 可选维度 Agent 分析 + 首席策略综合报告 + Markdown/JSON 导出 |
+| **AI Analysis** | 可选维度 Agent 分析 + 首席策略综合报告 + 追问 + Markdown/HTML/JSON 导出 |
 | **Knowledge QA** | 接入 `st_qa.py`，面向 `knowledge_base/` 的 RAG 投资知识问答 |
 | **Watchlist** | 本地自选股列表，保存到 `data/user/favorites.json` |
 | **History** | 读取 `data/output/{stock_code}/analysis_*.json`，浏览历史 AI 分析并再次导出报告 |
@@ -310,6 +310,8 @@ python main.py alerts-check --json
 - **自选股**：侧边栏可加入/移除当前股票，`Watchlist` 页面可集中管理。
 - **历史分析**：Streamlit 端运行 AI 分析后会自动保存 JSON 到 `data/output/`，`History` 页面支持筛选和查看详情。
 - **AI 报告导出**：AI 分析和历史详情均支持下载 Markdown 报告与原始 JSON。
+- **HTML 报告导出**：额外提供可打印 HTML 报告，可用浏览器打印/另存为 PDF。
+- **对话式追问**：AI 分析完成后可基于本次分析结果继续提问，追问会携带分析上下文。
 - **对齐 README 的技术指标**：技术页新增 MACD、RSI、布林带图，横轴继续按交易日压缩。
 - **财务图表**：财务页在表格之外新增利润表关键指标趋势和财务/估值雷达图。
 - **按维度选择分析**：AI 分析页可勾选需要运行的专业 Agent，避免每次都全量调用。

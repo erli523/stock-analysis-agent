@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import html
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -339,6 +340,34 @@ def build_markdown_report(result: Dict[str, Any]) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+def build_html_report(result: Dict[str, Any]) -> str:
+    markdown = build_markdown_report(result)
+    body_lines = []
+    for line in markdown.splitlines():
+        escaped = html.escape(line)
+        if line.startswith("# "):
+            body_lines.append(f"<h1>{html.escape(line[2:])}</h1>")
+        elif line.startswith("## "):
+            body_lines.append(f"<h2>{html.escape(line[3:])}</h2>")
+        elif line.startswith("### "):
+            body_lines.append(f"<h3>{html.escape(line[4:])}</h3>")
+        elif line.startswith("- "):
+            body_lines.append(f"<li>{html.escape(line[2:])}</li>")
+        elif line.strip():
+            body_lines.append(f"<p>{escaped}</p>")
+        else:
+            body_lines.append("")
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<title>Stock AI Report</title>"
+        "<style>body{font-family:Arial,'Microsoft YaHei',sans-serif;max-width:920px;margin:40px auto;"
+        "line-height:1.65;color:#111827}h1,h2,h3{color:#073b74}li{margin:.35rem 0}"
+        "@media print{body{margin:20px}}</style></head><body>"
+        + "\n".join(body_lines)
+        + "</body></html>"
+    )
+
+
 def render_report_downloads(result: Dict[str, Any], stock_code: str) -> None:
     if not result:
         return
@@ -350,11 +379,42 @@ def render_report_downloads(result: Dict[str, Any], stock_code: str) -> None:
         mime="text/markdown",
     )
     st.download_button(
+        "下载 AI 分析报告（HTML，可打印 PDF）",
+        data=build_html_report(result).encode("utf-8"),
+        file_name=f"{stock_code}_ai_report.html",
+        mime="text/html",
+    )
+    st.download_button(
         "下载 AI 分析结果（JSON）",
         data=json.dumps(result, ensure_ascii=False, indent=2, default=str).encode("utf-8"),
         file_name=f"{stock_code}_ai_result.json",
         mime="application/json",
     )
+
+
+def answer_followup_question(result: Dict[str, Any], question: str) -> str:
+    from config.config import get_ai_config
+    from hengline.client.client_factory import get_langchain_llm
+
+    if not question.strip():
+        return "请输入追问内容。"
+    context = json.dumps(result, ensure_ascii=False, default=str)[:12000]
+    config = get_ai_config()
+    llm = get_langchain_llm(provider=config.get("provider"), config=config)
+    if llm is None:
+        return "当前 LLM 未初始化，无法追问。"
+    messages = [
+        {
+            "role": "system",
+            "content": "你是股票投研助手。请只基于给定分析结果回答用户追问，说明依据和不确定性，不构成投资建议。",
+        },
+        {
+            "role": "user",
+            "content": f"分析结果JSON：\n{context}\n\n用户追问：{question}",
+        },
+    ]
+    response = llm.invoke(messages)
+    return getattr(response, "content", str(response))
 
 
 def render_history_page() -> None:

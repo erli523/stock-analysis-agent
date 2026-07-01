@@ -25,6 +25,7 @@ from hengline.agents.agent_coordinator import AgentCoordinator  # noqa: E402
 from hengline.streamlit.st_product_features import (  # noqa: E402
     AGENT_LABELS,
     add_favorite,
+    answer_followup_question,
     build_markdown_report,
     load_favorites,
     normalize_agent_selection,
@@ -1133,6 +1134,20 @@ def show_agent_analysis(ticker: str, period: str):
     if result:
         section_title("报告导出")
         render_report_downloads(result, ticker)
+        section_title("对话式追问", "基于本次 AI 分析结果继续提问。")
+        question = st.text_input("追问内容", placeholder="例如：为什么建议持有？最大的风险是什么？")
+        if st.button("提交追问", disabled=not question.strip()):
+            with st.spinner("正在基于本次分析回答..."):
+                try:
+                    answer = answer_followup_question(result, question)
+                    st.session_state.setdefault("analysis_followups", []).append(
+                        {"question": question, "answer": answer}
+                    )
+                except Exception as exc:
+                    st.error(f"追问失败: {exc}")
+        for item in reversed(st.session_state.get("analysis_followups", [])[-5:]):
+            with st.expander(item["question"], expanded=False):
+                st.write(item["answer"])
 
 
 setup_page()

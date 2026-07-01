@@ -119,6 +119,9 @@ class ProductFeatureHelperTests(unittest.TestCase):
         self.assertIn("最终建议：买入", markdown)
         self.assertIn("AI 需求强劲", markdown)
         self.assertIn("趋势向上", markdown)
+        html = features.build_html_report(result)
+        self.assertIn("<!doctype html>", html)
+        self.assertIn("股票 AI 分析报告 - NVDA", html)
 
 
 if __name__ == "__main__":
