@@ -31,8 +31,9 @@ class FundamentalAgent(BaseAgent):
         """
         super().__init__(config)
 
-        # 初始化股票数据管理器
-        self.stock_manager = StockDataManager()
+        # 初始化股票数据管理器（优先使用协调器注入的共享实例）
+        if self.stock_manager is None:
+            self.stock_manager = StockDataManager()
 
         # 基本面分析关键维度
         self.analysis_dimensions = [
@@ -269,78 +270,21 @@ class FundamentalAgent(BaseAgent):
                 financial_data["financial_ratios"] = current_ratios
 
             if not financial_data["income_statement"] or not financial_data["income_statement"].get("total_revenue", 0):
-                debug(f"股票 {stock_code} 的财务数据不完整，使用内置模拟数据")
-                # 使用内置的模拟数据
-                financial_data["income_statement"] = {
-                    "total_revenue": 1000000000.0,  # 10亿营收
-                    "gross_profit": 300000000.0,   # 3亿毛利润
-                    "operating_income": 200000000.0,  # 2亿营业利润
-                    "net_income": 150000000.0       # 1.5亿净利润
-                }
-                
-                financial_data["cash_flow"] = {
-                    "operating_cash_flow": 180000000.0,
-                    "investing_cash_flow": -50000000.0,
-                    "financing_cash_flow": -30000000.0,
-                    "free_cash_flow": 130000000.0
-                }
-                
-                financial_data["financial_ratios"] = {
-                    "pe_ratio": 20.0,
-                    "pb_ratio": 2.5,
-                    "ps_ratio": 5.0,
-                    "debt_to_equity": 1.2,
-                    "return_on_equity": 0.15,
-                    "profit_margin": 0.15,
-                    "operating_margin": 0.20,
-                    "revenue_growth": 0.12,
-                    "earnings_growth": 0.10,
-                    "current_ratio": 1.5,
-                    "quick_ratio": 1.2,
-                    "peg_ratio": 2.0
-                }
-                
-                financial_data["valuation_metrics"] = {
-                    "market_cap": 30000000000.0,  # 300亿市值
-                    "enterprise_value": 32000000000.0,
-                    "ev_to_ebitda": 15.0,
-                    "forward_eps": 2.5,
-                    "trailing_eps": 2.0
-                }
+                warning(f"股票 {stock_code} 的财务报表数据不完整，将告知 LLM 数据缺失")
+                financial_data["data_available"] = False
+                financial_data["data_note"] = (
+                    "财务报表数据暂时无法获取（可能为新股/数据源限制），"
+                    "LLM 将基于可用的估值指标（PE/PB/市值）进行分析，"
+                    "请用户在正式决策前自行核查最新财报数据。"
+                )
                 
         except Exception as e:
             error(f"获取财务数据失败: {str(e)}")
-            
-            # 发生异常时，使用默认的模拟数据确保程序可以继续运行
-            debug(f"使用默认模拟数据继续运行")
-            financial_data["income_statement"] = {
-                "total_revenue": 1000000000.0,
-                "gross_profit": 300000000.0,
-                "operating_income": 200000000.0,
-                "net_income": 150000000.0
-            }
-            
-            financial_data["cash_flow"] = {
-                "operating_cash_flow": 180000000.0,
-                "investing_cash_flow": -50000000.0,
-                "financing_cash_flow": -30000000.0,
-                "free_cash_flow": 130000000.0
-            }
-            
-            financial_data["financial_ratios"] = {
-                "pe_ratio": 20.0,
-                "pb_ratio": 2.5,
-                "ps_ratio": 5.0,
-                "debt_to_equity": 1.2,
-                "return_on_equity": 0.15,
-                "profit_margin": 0.15,
-                "operating_margin": 0.20,
-                "revenue_growth": 0.12,
-                "earnings_growth": 0.10,
-                "current_ratio": 1.5,
-                "quick_ratio": 1.2,
-                "peg_ratio": 2.0
-            }
+            financial_data["data_available"] = False
+            financial_data["data_note"] = (
+                f"财务数据获取异常：{str(e)}。"
+                "LLM 将基于有限可用数据进行分析，结论仅供参考。"
+            )
 
         return financial_data
 

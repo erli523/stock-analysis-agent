@@ -25,6 +25,7 @@ from hengline.agents.industry_macro_agent import IndustryMacroAgent
 from hengline.agents.sentiment_agent import SentimentAgent
 from hengline.agents.technical_agent import TechnicalAgent
 from hengline.logger import debug, info, error, warning, performance_logger
+from hengline.stock.stock_manage import StockDataManager
 from utils.log_utils import print_log_exception
 
 # 应用nest_asyncio以支持嵌套事件循环
@@ -174,6 +175,14 @@ class AgentCoordinator:
                 "ESGRiskAgent": ESGRiskAgent(agent_configs["ESGRiskAgent"]),
                 "ChiefStrategyAgent": ChiefStrategyAgent(agent_configs["ChiefStrategyAgent"])
             }
+
+            # 创建共享 StockDataManager 并注入所有子 Agent，避免重复拉取同只股票数据
+            shared_stock_manager = StockDataManager()
+            for agent_name, agent in self.agents.items():
+                if hasattr(agent, 'inject_stock_manager'):
+                    agent.inject_stock_manager(shared_stock_manager)
+                    debug(f"已向 {agent_name} 注入共享 StockDataManager")
+            debug("共享 StockDataManager 注入完成")
 
             # 记录初始化的智能体数量
             info(f"成功初始化 {len(self.agents)} 个智能体")

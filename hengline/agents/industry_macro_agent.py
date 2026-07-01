@@ -39,8 +39,9 @@ class IndustryMacroAgent(BaseAgent):
             )
         super().__init__(config)
 
-        # 初始化股票数据管理器
-        self.stock_manager = StockDataManager()
+        # 初始化股票数据管理器（优先使用协调器注入的共享实例）
+        if self.stock_manager is None:
+            self.stock_manager = StockDataManager()
 
         # 行业与宏观分析关键维度
         self.analysis_dimensions = [

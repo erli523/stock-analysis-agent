@@ -30,8 +30,9 @@ class SentimentAgent(BaseAgent):
         """
         super().__init__(config)
 
-        # 初始化股票数据管理器
-        self.stock_manager = StockDataManager()
+        # 初始化股票数据管理器（优先使用协调器注入的共享实例）
+        if self.stock_manager is None:
+            self.stock_manager = StockDataManager()
 
         # 舆情与情绪分析关键维度
         self.analysis_dimensions = [
@@ -220,31 +221,15 @@ class SentimentAgent(BaseAgent):
         Returns:
             Dict[str, Any]: 社交媒体数据
         """
-        # 这里是模拟数据，实际项目中应该接入真实的社交媒体API
+        # 社交媒体数据：当前无真实 API 接入，明确标注数据不可用
+        # 实际项目中应接入东方财富股吧、雪球、微博等 A 股社交平台 API
         social_media_data = {
-            "platforms": [
-                {
-                    "name": "Twitter",
-                    "mention_count": self._get_random_int(100, 1000),
-                    "sentiment_score": self._get_random_float(-0.5, 0.5),
-                    "trending_topics": ["新产品发布", "财报预期", "行业动态"]
-                },
-                {
-                    "name": "Reddit",
-                    "mention_count": self._get_random_int(50, 500),
-                    "sentiment_score": self._get_random_float(-0.5, 0.5),
-                    "trending_topics": ["技术分析", "机构持仓", "风险讨论"]
-                },
-                {
-                    "name": "StockTwits",
-                    "mention_count": self._get_random_int(200, 1500),
-                    "sentiment_score": self._get_random_float(-0.5, 0.5),
-                    "trending_topics": ["短期交易", "期权活动", "分析师评级"]
-                }
-            ],
-            "overall_sentiment": self._get_random_float(-1.0, 1.0),
-            "engagement_trend": "increasing" if self._get_random_float(0, 1) > 0.5 else "decreasing",
-            "key_influencers": ["金融分析师A", "投资策略师B", "行业专家C"]
+            "platforms": [],
+            "overall_sentiment": None,
+            "engagement_trend": "unknown",
+            "key_influencers": [],
+            "data_available": False,
+            "note": "社交媒体数据暂无真实数据源，LLM 分析将跳过该维度"
         }
 
         return social_media_data
@@ -256,15 +241,19 @@ class SentimentAgent(BaseAgent):
         Returns:
             Dict[str, Any]: 市场情绪指标
         """
+        # 市场情绪指标：当前无真实 API，明确标注不可用
+        # 实际项目中可接入 CNindex（沪深交易所）、中证协情绪指数等
         market_sentiment = {
             "fear_greed_index": {
-                "current": self._get_random_int(20, 80),
-                "trend": "improving" if self._get_random_float(0, 1) > 0.5 else "worsening"
+                "current": None,
+                "trend": "unknown"
             },
-            "vix_equivalent": self._get_random_float(15, 30),
-            "put_call_ratio": self._get_random_float(0.8, 1.5),
-            "market_breadth": self._get_random_float(0.4, 0.6),
-            "retail_investor_sentiment": "neutral" if self._get_random_float(0, 1) > 0.7 else "bullish" if self._get_random_float(0, 1) > 0.5 else "bearish"
+            "vix_equivalent": None,
+            "put_call_ratio": None,
+            "market_breadth": None,
+            "retail_investor_sentiment": "unknown",
+            "data_available": False,
+            "note": "市场情绪指标暂无真实数据源，LLM 分析将基于新闻数据推断"
         }
 
         return market_sentiment

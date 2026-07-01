@@ -213,44 +213,54 @@ class ChiefStrategyAgent(BaseAgent):
         Returns:
             float: 评分 (0-100)
         """
-        # 根据不同智能体定制评分提取逻辑
+        # 根据不同智能体的实际输出结构提取评分（统一映射到 0-100）
         if agent_name == "FundamentalAgent":
-            # 基本面评分（越高越好）
-            return result.get("fundamental_score", 50.0)
-        
+            # LLM 输出 overall_score: 0-10，转换到 0-100
+            raw = result.get("overall_score", 0)
+            if raw and raw > 0:
+                return float(raw) * 10 if raw <= 10 else float(raw)
+            # 回退：用 confidence_score 粗估
+            return result.get("confidence_score", 0.5) * 100
+
         elif agent_name == "TechnicalAgent":
-            # 技术面评分（越高越好）
-            return result.get("technical_score", 50.0)
-        
+            # TechnicalAgent 通过 signal_strength 和 confidence_score 估算评分
+            signal_map = {
+                "strong_bullish": 85, "bullish": 70, "weak_bullish": 60,
+                "neutral": 50,
+                "weak_bearish": 40, "bearish": 30, "strong_bearish": 15
+            }
+            signal = result.get("signal_strength", "neutral")
+            base = signal_map.get(signal, 50)
+            confidence = result.get("confidence_score", 0.5)
+            # 根据置信度调整（高置信度时分值靠近极端，低置信度时向中位收敛）
+            return base * 0.7 + confidence * 100 * 0.3
+
         elif agent_name == "IndustryMacroAgent":
-            # 行业与宏观评分（越高越好）
+            # 行业与宏观评分
             industry_score = result.get("industry_analysis", {}).get("industry_score", 50.0)
             macro_score = result.get("macro_analysis", {}).get("economic_score", 50.0)
-            return (industry_score + macro_score) / 2
-        
+            return (float(industry_score) + float(macro_score)) / 2
+
         elif agent_name == "SentimentAgent":
-            # 情绪分析评分（需要从多个指标综合）
-            sentiment_score = 50.0  # 默认值
-            
-            # 尝试从不同位置获取情绪指标
+            # 从 sentiment_metrics.news_sentiment 计算正向比例
             sentiment_metrics = result.get("sentiment_metrics", {})
-            if sentiment_metrics:
-                news_sentiment = sentiment_metrics.get("news_sentiment", {})
-                pos = news_sentiment.get("positive", 0)
-                neg = news_sentiment.get("negative", 0)
-                total = pos + neg
-                if total > 0:
-                    # 转换为0-100分
-                    sentiment_score = (pos / total) * 100
-            
-            return sentiment_score
-        
+            news_sentiment = sentiment_metrics.get("news_sentiment", {})
+            pos = news_sentiment.get("positive", 0)
+            neg = news_sentiment.get("negative", 0)
+            total = pos + neg
+            if total > 0:
+                return (pos / total) * 100
+            # 无新闻数据时，从市场情绪指标尝试
+            market_sent = sentiment_metrics.get("market_sentiment", {})
+            fear_greed = market_sent.get("current", 0)
+            if fear_greed:
+                return float(fear_greed)
+            return 50.0
+
         elif agent_name == "FundFlowAgent":
-            # 资金流评分（越高越好）
+            # 根据资金流向分类映射评分
             key_metrics = result.get("key_metrics", {})
             flow_classification = key_metrics.get("flow_classification", "neutral")
-            
-            # 根据资金流分类转换为评分
             flow_scores = {
                 "strong_inflow": 90,
                 "moderate_inflow": 75,
@@ -260,14 +270,13 @@ class ChiefStrategyAgent(BaseAgent):
                 "moderate_outflow": 25,
                 "strong_outflow": 10
             }
-            
-            return flow_scores.get(flow_classification, 50.0)
-        
+            return float(flow_scores.get(flow_classification, 50))
+
         elif agent_name == "ESGRiskAgent":
-            # ESG评分（越高越好）
+            # ESG 综合评分（0-100，已标准化）
             esg_metrics = result.get("esg_metrics", {})
-            return esg_metrics.get("overall_score", 50.0)
-        
+            return float(esg_metrics.get("overall_score", 50.0))
+
         # 默认评分
         return 50.0
     

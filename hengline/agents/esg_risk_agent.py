@@ -32,8 +32,9 @@ class ESGRiskAgent(BaseAgent):
         """
         super().__init__(config)
 
-        # 初始化股票数据管理器
-        self.stock_manager = StockDataManager()
+        # 初始化股票数据管理器（优先使用协调器注入的共享实例）
+        if self.stock_manager is None:
+            self.stock_manager = StockDataManager()
 
         # ESG分析关键维度
         self.analysis_dimensions = [
@@ -231,20 +232,16 @@ class ESGRiskAgent(BaseAgent):
                 if len(governance_score) > 0:
                     esg_data["governance_score"] = round(float(governance_score[0]) * 0.7 + 30, 2)
 
-            # 如果没有直接评分，使用模拟数据（实际项目中应接入专业ESG数据提供商）
+            # yfinance 未返回 ESG 数据：标注不可用，不使用随机模拟值
             if esg_data["overall_score"] == 0:
-                # 基于行业和公司特征的模拟评分
-                import random
-                base_score = random.uniform(40, 80)
-
-                # 假设科技公司通常ESG评分较高
-                if "Technology" in stock_code or "Tech" in stock_code:
-                    base_score += 10
-
-                esg_data["overall_score"] = round(base_score, 2)
-                esg_data["environmental_score"] = round(base_score + random.uniform(-10, 10), 2)
-                esg_data["social_score"] = round(base_score + random.uniform(-10, 10), 2)
-                esg_data["governance_score"] = round(base_score + random.uniform(-10, 10), 2)
+                esg_data.update({
+                    "overall_score": None,
+                    "environmental_score": None,
+                    "social_score": None,
+                    "governance_score": None,
+                    "data_available": False,
+                    "note": "未能从 yfinance 获取 ESG 评分数据，建议接入 MSCI/Sustainalytics 等专业 ESG 数据提供商"
+                })
 
             # 确定ESG评级
             esg_data["rating"] = self._calculate_esg_rating(esg_data["overall_score"])

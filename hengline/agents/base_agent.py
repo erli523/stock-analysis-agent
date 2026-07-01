@@ -125,9 +125,18 @@ class BaseAgent(ABC):
         if config.enable_memory:
             self.memory = self._init_memory()
 
+        # stock_manager 占位符，供子类或协调器注入共享实例
+        self.stock_manager = None
+
         debug(f"初始化智能体: {self.agent_name}")
         if config.enable_memory:
             debug(f"智能体记忆功能已启用")
+
+    def inject_stock_manager(self, stock_manager) -> None:
+        """注入外部共享的 StockDataManager，避免每个 Agent 重复创建实例。"""
+        self.stock_manager = stock_manager
+        name = getattr(self, "agent_name", type(self).__name__)
+        debug(f"{name} 已接受注入的共享 StockDataManager")
 
     @abstractmethod
     def analyze(self, stock_code: str, time_range: str = "1y", **kwargs) -> AgentResult:
@@ -323,15 +332,32 @@ class BaseAgent(ABC):
             results = self.retriever.retrieve(query, top_k=top_k)
             knowledge = []
             for result in results:
-                if hasattr(result, 'text'):
+                # LlamaIndex NodeWithScore 对象（最常见，优先处理）
+                if hasattr(result, 'node') and hasattr(result.node, 'get_content'):
+                    content = result.node.get_content()
+                    if content:
+                        knowledge.append(content)
+                # 直接包含 get_content 方法的节点对象
+                elif hasattr(result, 'get_content'):
+                    content = result.get_content()
+                    if content:
+                        knowledge.append(content)
+                # 字符串直接追加
+                elif isinstance(result, str):
+                    knowledge.append(result)
+                # dict 格式兼容
+                elif isinstance(result, dict):
+                    text = result.get('text') or result.get('content') or result.get('page_content', '')
+                    if text:
+                        knowledge.append(text)
+                # 回退：尝试 .text / .content 属性
+                elif hasattr(result, 'text') and result.text:
                     knowledge.append(result.text)
-                elif hasattr(result, 'content'):
+                elif hasattr(result, 'content') and result.content:
                     knowledge.append(result.content)
-                elif isinstance(result, dict) and 'text' in result:
-                    knowledge.append(result['text'])
-                elif isinstance(result, dict) and 'node' in result and hasattr(result['node'], 'get_content'):
-                    # 处理llama_index的NodeWithScore格式
-                    knowledge.append(result['node'].get_content())
+                else:
+                    debug(f"无法解析检索结果类型: {type(result)}")
+            debug(f"知识库检索完成，query='{query[:30]}...'，获取 {len(knowledge)} 个片段")
             return knowledge
         except Exception as e:
             error(f"知识库检索失败: {str(e)}")

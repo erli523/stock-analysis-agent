@@ -23,6 +23,28 @@ from hengline.stock.stock_manage import (  # noqa: E402
 from hengline.agents.agent_coordinator import AgentCoordinator  # noqa: E402
 
 
+@st.cache_resource(show_spinner="Initializing agent system (first time only)...")
+def get_coordinator(use_memory: bool) -> AgentCoordinator:
+    """缓存 AgentCoordinator 单例，避免每次点击重建 7 个 Agent 实例。
+    use_memory 变化时自动重建。"""
+    return AgentCoordinator(
+        {
+            "agents": {
+                name: {"enable_memory": use_memory}
+                for name in [
+                    "FundamentalAgent",
+                    "TechnicalAgent",
+                    "IndustryMacroAgent",
+                    "SentimentAgent",
+                    "FundFlowAgent",
+                    "ESGRiskAgent",
+                    "ChiefStrategyAgent",
+                ]
+            }
+        }
+    )
+
+
 PERIOD_OPTIONS = {
     "1D": "1d",
     "1W": "1w",
@@ -429,26 +451,65 @@ def render_agent_status(status: dict):
     if not status:
         return
     st.markdown("#### Agent Status")
+
+    failed_agents = [
+        name for name, item in status.items() if not item.get("success")
+    ]
+    if failed_agents:
+        failed_labels = ", ".join(normalize_agent_name(n) for n in failed_agents)
+        st.warning(
+            f"**{len(failed_agents)} 个 Agent 分析失败**：{failed_labels}。"
+            " 以下维度数据缺失，最终建议仅基于成功的 Agent，请谨慎参考。",
+            icon="⚠️",
+        )
+
     rows = []
     for agent_name, item in status.items():
+        success = item.get("success", False)
         rows.append(
             {
                 "Agent": normalize_agent_name(agent_name),
-                "Status": "Success" if item.get("success") else "Failed",
-                "Confidence": item.get("confidence_score"),
-                "Issue": item.get("error") or "",
+                "Status": "✅ 成功" if success else "❌ 失败",
+                "Confidence": f"{item.get('confidence_score', 0):.0%}" if item.get('confidence_score') is not None else "N/A",
+                "Issue": item.get("error") or ("" if success else "分析未完成"),
             }
         )
-    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
 
-def render_agent_details(details: dict):
-    if not details:
+def render_agent_details(details: dict, status: dict = None):
+    if not details and not status:
         return
+
+    # 合并 details 和 status，确保失败的 Agent 也显示在 Tab 中
+    all_agent_names = list(details.keys())
+    if status:
+        for name in status:
+            if name not in all_agent_names and name != "ChiefStrategyAgent":
+                all_agent_names.append(name)
+
+    if not all_agent_names:
+        return
+
     st.markdown("#### Agent Findings")
-    tabs = st.tabs([normalize_agent_name(name) for name in details.keys()])
-    for tab, (agent_name, agent_result) in zip(tabs, details.items()):
+    tabs = st.tabs([normalize_agent_name(name) for name in all_agent_names])
+
+    for tab, agent_name in zip(tabs, all_agent_names):
         with tab:
+            agent_status = (status or {}).get(agent_name, {})
+            agent_result = details.get(agent_name, {})
+            agent_success = agent_status.get("success", bool(agent_result))
+
+            if not agent_success:
+                err_msg = agent_status.get("error") or "该维度分析未完成"
+                st.error(
+                    f"**{normalize_agent_name(agent_name)} 分析失败**：{err_msg}\n\n"
+                    "此维度数据缺失，最终投资建议中该维度权重已被跳过。",
+                    icon="❌",
+                )
+                continue
+
             st.metric("Confidence", format_score(agent_result.get("confidence_score")))
             findings = agent_result.get("key_findings") or []
             if findings:
@@ -492,22 +553,7 @@ def show_agent_analysis(ticker: str, period: str):
 
     with st.spinner("Running agent workflow..."):
         try:
-            coordinator = AgentCoordinator(
-                {
-                    "agents": {
-                        name: {"enable_memory": use_memory}
-                        for name in [
-                            "FundamentalAgent",
-                            "TechnicalAgent",
-                            "IndustryMacroAgent",
-                            "SentimentAgent",
-                            "FundFlowAgent",
-                            "ESGRiskAgent",
-                            "ChiefStrategyAgent",
-                        ]
-                    }
-                }
-            )
+            coordinator = get_coordinator(use_memory)
             result = coordinator.analyze(ticker, time_range=period)
         except Exception as exc:
             st.error(f"Agent workflow failed to start: {exc}")
@@ -530,7 +576,7 @@ def show_agent_analysis(ticker: str, period: str):
     render_agent_status(status)
 
     details = result.get("detailed_results") or {}
-    render_agent_details(details)
+    render_agent_details(details, status)
 
 
 setup_page()

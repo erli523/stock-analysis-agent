@@ -30,8 +30,9 @@ class FundFlowAgent(BaseAgent):
         """
         super().__init__(config)
 
-        # 初始化股票数据管理器
-        self.stock_manager = StockDataManager()
+        # 初始化股票数据管理器（优先使用协调器注入的共享实例）
+        if self.stock_manager is None:
+            self.stock_manager = StockDataManager()
 
         # 资金流分析关键维度
         self.analysis_dimensions = [
@@ -404,21 +405,30 @@ class FundFlowAgent(BaseAgent):
                 money_flow["money_flow_index"] = round(mfi_values[-1], 2)
 
             # 确定资金流向分类
+            # 使用 OBV 相对变化率（百分比）替代绝对值阈值，避免跨股票量纲不一致
             if len(money_flow["on_balance_volume"]) >= 2:
-                obv_change = money_flow["on_balance_volume"][-1] - money_flow["on_balance_volume"][-2]
+                obv_prev = money_flow["on_balance_volume"][-2]
+                obv_curr = money_flow["on_balance_volume"][-1]
+                obv_change = obv_curr - obv_prev
+                # 计算相对变化率（避免除零）
+                if abs(obv_prev) > 0:
+                    obv_change_pct = obv_change / abs(obv_prev)
+                else:
+                    obv_change_pct = 0.0
+                mfi = money_flow.get("money_flow_index", 50)
 
-                # 基于OBV变化量和MFI值确定流向分类
-                if obv_change > self.money_flow_thresholds["strong_inflow"] and money_flow["money_flow_index"] > 80:
+                # 基于 OBV 相对变化率（%）和 MFI 值综合判断
+                if obv_change_pct > 0.05 and mfi > 80:
                     money_flow["flow_classification"] = "strong_inflow"
-                elif obv_change > self.money_flow_thresholds["moderate_inflow"] and money_flow["money_flow_index"] > 70:
+                elif obv_change_pct > 0.02 and mfi > 70:
                     money_flow["flow_classification"] = "moderate_inflow"
-                elif obv_change > self.money_flow_thresholds["weak_inflow"]:
+                elif obv_change_pct > 0.005:
                     money_flow["flow_classification"] = "weak_inflow"
-                elif obv_change < self.money_flow_thresholds["strong_outflow"] and money_flow["money_flow_index"] < 20:
+                elif obv_change_pct < -0.05 and mfi < 20:
                     money_flow["flow_classification"] = "strong_outflow"
-                elif obv_change < self.money_flow_thresholds["moderate_outflow"] and money_flow["money_flow_index"] < 30:
+                elif obv_change_pct < -0.02 and mfi < 30:
                     money_flow["flow_classification"] = "moderate_outflow"
-                elif obv_change < self.money_flow_thresholds["weak_outflow"]:
+                elif obv_change_pct < -0.005:
                     money_flow["flow_classification"] = "weak_outflow"
 
                 # 确定趋势
