@@ -274,6 +274,9 @@ python main.py --dashboard
 
 # 方式三：直接启动 Streamlit
 streamlit run hengline/streamlit/st_main.py
+
+# 命令行单次分析
+python main.py analyze 300502 --time-range 1m --agents TechnicalAgent FundamentalAgent
 ```
 
 打开浏览器访问 **http://localhost:8501**
@@ -294,6 +297,10 @@ streamlit run hengline/streamlit/st_main.py
 | **Knowledge QA** | 接入 `st_qa.py`，面向 `knowledge_base/` 的 RAG 投资知识问答 |
 | **Watchlist** | 本地自选股列表，保存到 `data/user/favorites.json` |
 | **History** | 读取 `data/output/{stock_code}/analysis_*.json`，浏览历史 AI 分析并再次导出报告 |
+| **Screener** | 对候选股票池按 PE/PB、区间涨跌幅和 MA20 趋势筛选 |
+| **Backtest** | 单股均线交叉策略回测，对比买入持有收益 |
+| **Portfolio** | 本地持仓录入、组合市值、浮动盈亏和行业分布 |
+| **Alerts** | 本地价格阈值预警配置和手动检查 |
 
 ### 新增产品能力
 
@@ -303,6 +310,10 @@ streamlit run hengline/streamlit/st_main.py
 - **对齐 README 的技术指标**：技术页新增 MACD、RSI、布林带图，横轴继续按交易日压缩。
 - **财务图表**：财务页在表格之外新增利润表关键指标趋势和财务/估值雷达图。
 - **按维度选择分析**：AI 分析页可勾选需要运行的专业 Agent，避免每次都全量调用。
+- **日期范围**：侧边栏支持自定义开始/结束日期，会在拉取行情后按日期过滤。
+- **股票筛选器**：支持从自选股或手工输入候选池中筛选估值、涨跌幅、趋势条件。
+- **策略回测**：提供均线交叉策略收益曲线和买入持有基准对比。
+- **组合与预警**：本地 JSON 保存持仓和价格阈值，便于后续接入定时扫描/推送。
 
 ---
 
@@ -359,6 +370,17 @@ knowledge_base/
 
 支持的 Embedding Provider：`openai`（含兼容接口）· `huggingface` · `ollama`
 
+### API Key 鉴权
+
+默认本地开发不启用 API 鉴权。设置 `APP_API_KEY` 后，FastAPI 端点会要求请求携带以下任一头：
+
+```bash
+X-API-Key: your-key
+Authorization: Bearer your-key
+```
+
+Swagger 文档 `/docs`、`/redoc`、`/openapi.json` 保持可访问，方便调试。
+
 ---
 
 ## 🧪 测试
@@ -375,7 +397,7 @@ python test/test_streamlit_product_features.py
 python test/test_reflection_loop.py
 
 # 关键文件语法检查
-python -m py_compile hengline/streamlit/st_main.py hengline/streamlit/st_product_features.py hengline/agents/agent_coordinator.py
+python -m py_compile main.py app/application.py hengline/streamlit/st_main.py hengline/streamlit/st_product_features.py hengline/agents/agent_coordinator.py
 ```
 
 ---
@@ -389,7 +411,7 @@ stock-analysis-agent/
 │   ├── client/          # LLM 客户端（DeepSeek/Qwen/OpenAI/Ollama）
 │   ├── rag/             # RAG 链与向量存储管理
 │   ├── stock/           # 数据源（BaoStock/AkShare/YFinance 等）
-│   ├── streamlit/       # 前端界面（K线/技术/财务/AI分析/问答/历史/自选股）
+│   ├── streamlit/       # 前端界面（K线/技术/财务/AI分析/问答/历史/自选股/筛选/回测/组合/预警）
 │   ├── tools/           # LlamaIndex 工具、缓存、JSON解析
 │   └── prompts/         # 各 Agent 的 YAML 提示词模板
 ├── knowledge_base/      # RAG 知识库文档（16 篇）
@@ -425,6 +447,8 @@ stock-analysis-agent/
 | **知识库管理 UI** | Streamlit 侧边栏新增知识库状态显示和一键重建索引按钮 |
 | **产品功能接入** | 主界面新增知识库问答、自选股、历史分析、AI 报告导出、按维度选择 Agent |
 | **图表能力补齐** | 技术页新增 MACD/RSI/布林带，财务页新增趋势图和雷达图 |
+| **工具型能力** | 新增日期范围、股票筛选、均线回测、组合管理、价格预警、CLI 分析入口 |
+| **API 安全** | 设置 `APP_API_KEY` 后启用 API Key 鉴权，兼容 `X-API-Key` 和 Bearer Token |
 | **索引构建脚本** | 新增 `build_rag_index.py`，支持 `--rebuild` 参数，方便首次部署和文档更新 |
 | **Agent 系统全面体检** | 修复首席策略评分字段错位、Sentiment/ESG/Fundamental 随机数据造假、FundFlow 阈值逻辑错误、子 Agent 失败无 UI 提示等 P0-P2 级问题 |
 | **Reflection Loop** | Agent 输出校验失败后自动重试（携带错误上下文），新增 ConflictAnalyzer 冲突检测节点，差异化超时与共享数据管理器 |

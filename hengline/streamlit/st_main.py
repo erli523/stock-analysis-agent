@@ -4,6 +4,7 @@
 
 import os
 import sys
+from datetime import date, timedelta
 
 import pandas as pd
 import plotly.express as px
@@ -29,9 +30,13 @@ from hengline.streamlit.st_product_features import (  # noqa: E402
     normalize_agent_selection,
     remove_favorite,
     render_advanced_technical_charts,
+    render_alerts_page,
+    render_backtest_page,
     render_financial_visuals,
     render_history_page,
+    render_portfolio_page,
     render_report_downloads,
+    render_screener_page,
     render_watchlist_page,
     save_analysis_result,
 )
@@ -81,6 +86,10 @@ VIEW_OPTIONS = {
     "Knowledge QA": "知识库问答",
     "Watchlist": "自选股",
     "History": "历史分析",
+    "Screener": "股票筛选",
+    "Backtest": "策略回测",
+    "Portfolio": "投资组合",
+    "Alerts": "预警配置",
 }
 
 CHART_LAYOUT = {
@@ -1145,6 +1154,14 @@ with st.sidebar:
         st.rerun()
     period_display = st.selectbox("周期", list(PERIOD_OPTIONS.keys()), index=2)
     period = PERIOD_OPTIONS[period_display]
+    custom_date_range = st.checkbox("使用自定义日期范围", value=False)
+    start_date = end_date = None
+    if custom_date_range:
+        date_cols = st.columns(2)
+        start_date = date_cols[0].date_input("开始日期", value=date.today() - timedelta(days=180))
+        end_date = date_cols[1].date_input("结束日期", value=date.today())
+        period_display = f"{start_date} 至 {end_date}"
+        period = "max"
 
     st.markdown("---")
     st.markdown("## 对比")
@@ -1215,7 +1232,7 @@ with st.sidebar:
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def load_market_data(ticker: str, period: str):
+def load_market_data(ticker: str, period: str, start_date=None, end_date=None):
     """缓存行情数据 10 分钟，避免切换视图时重复拉取（首次加载约 15~20s）。
     注意：先拉 stock_info（含市值/PE/PB），再拉大量K线，避免BaoStock session被大查询占满。
     """
@@ -1223,12 +1240,16 @@ def load_market_data(ticker: str, period: str):
     info = get_stock_info(ticker) or {}
     # 2. 再拉价格数据（可能涉及大量5分钟K线）
     price_df = normalize_price_data(get_stock_price_data(ticker, period=period))
+    if start_date and end_date and not price_df.empty:
+        start_ts = pd.to_datetime(start_date)
+        end_ts = pd.to_datetime(end_date)
+        price_df = price_df[(price_df["Date"] >= start_ts) & (price_df["Date"] <= end_ts)]
     # 3. 最后拉新闻
     news = get_stock_news(ticker) or []
     return price_df, info, news
 
 
-if view_mode in {"Knowledge QA", "Watchlist", "History"}:
+if view_mode in {"Knowledge QA", "Watchlist", "History", "Screener", "Portfolio", "Alerts"}:
     render_app_header(ticker, {"symbol": ticker, "data_source": "local app state"}, period_display, VIEW_OPTIONS.get(view_mode, view_mode))
     if view_mode == "Knowledge QA":
         try:
@@ -1243,10 +1264,16 @@ if view_mode in {"Knowledge QA", "Watchlist", "History"}:
             st.info(f"已选择 {selected_watch}。请在侧边栏股票代码中切换后查看行情。")
     elif view_mode == "History":
         render_history_page()
+    elif view_mode == "Screener":
+        render_screener_page(get_stock_info, get_stock_price_data)
+    elif view_mode == "Portfolio":
+        render_portfolio_page(get_stock_info, get_stock_price_data)
+    elif view_mode == "Alerts":
+        render_alerts_page(get_stock_price_data)
 else:
     with st.spinner("Loading data... (first load may take ~15 s while fetching market metrics)"):
         try:
-            price_data, stock_info, news_data = load_market_data(ticker, period)
+            price_data, stock_info, news_data = load_market_data(ticker, period, start_date, end_date)
             render_app_header(ticker, stock_info, period_display, VIEW_OPTIONS.get(view_mode, view_mode))
             render_data_quality_warning(stock_info, price_data)
 
@@ -1262,6 +1289,9 @@ else:
                 show_financial_export(ticker)
             elif view_mode == "AI Analysis":
                 show_agent_analysis(ticker, period)
+            elif view_mode == "Backtest":
+                show_price_summary(price_data)
+                render_backtest_page(ticker, price_data)
 
             if comparison_enabled and compare_tickers:
                 st.markdown("---")

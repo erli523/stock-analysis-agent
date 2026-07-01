@@ -8,7 +8,8 @@
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 #
@@ -68,6 +69,35 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _get_configured_api_key() -> str:
+    return os.environ.get("APP_API_KEY", "").strip()
+
+
+def _is_public_path(path: str) -> bool:
+    return (
+        path in {"/", "/docs", "/redoc", "/openapi.json"}
+        or path.startswith("/static/")
+        or path.startswith("/_stcore/")
+    )
+
+
+@app.middleware("http")
+async def verify_api_key(request: Request, call_next):
+    configured_key = _get_configured_api_key()
+    if not configured_key or _is_public_path(request.url.path):
+        return await call_next(request)
+
+    header_key = request.headers.get("X-API-Key", "").strip()
+    auth_header = request.headers.get("Authorization", "").strip()
+    bearer_key = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
+    if header_key != configured_key and bearer_key != configured_key:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid or missing API key"},
+        )
+    return await call_next(request)
 
 
 @app.middleware("http")

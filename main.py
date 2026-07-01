@@ -17,6 +17,8 @@
 import signal
 import sys
 import argparse
+import json
+from pathlib import Path
 
 import uvicorn
 
@@ -31,6 +33,41 @@ sys.stderr.reconfigure(encoding='utf-8')
 
 # 全局变量 - uvicorn期望的格式为"模块名:应用实例名"，不需要路径分隔符
 APP_FILE = "app:app"  # 应用入口路径
+
+
+def run_cli_analysis(argv=None) -> int:
+    """Run a one-off stock analysis from the command line."""
+    parser = argparse.ArgumentParser(description="Run stock AI analysis from CLI")
+    parser.add_argument("stock_code", help="股票代码，例如 300502 或 NVDA")
+    parser.add_argument("--time-range", default="1y", help="分析周期，默认 1y")
+    parser.add_argument(
+        "--agents",
+        nargs="*",
+        default=None,
+        help="可选 Agent 列表，例如 TechnicalAgent FundamentalAgent",
+    )
+    parser.add_argument("--output", default="", help="可选 JSON 输出文件路径")
+    args = parser.parse_args(argv)
+
+    from hengline.agents.agent_coordinator import AgentCoordinator
+    from hengline.streamlit.st_product_features import build_markdown_report, save_analysis_result
+
+    config = {}
+    if args.agents:
+        config["enabled_agents"] = args.agents
+    coordinator = AgentCoordinator(config)
+    result = coordinator.analyze(args.stock_code, time_range=args.time_range)
+    saved_path = save_analysis_result(result, args.stock_code)
+
+    print(build_markdown_report(result))
+    if saved_path:
+        print(f"\nJSON saved to: {saved_path}")
+    if args.output:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        print(f"Copied JSON to: {output_path}")
+    return 0 if result.get("success") else 1
 
 
 class HengLineApp(AppBaseEnv):
@@ -124,4 +161,6 @@ class HengLineApp(AppBaseEnv):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "analyze":
+        sys.exit(run_cli_analysis(sys.argv[2:]))
     HengLineApp().main()

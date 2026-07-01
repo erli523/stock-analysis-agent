@@ -78,6 +78,16 @@ class ProductFeatureHelperTests(unittest.TestCase):
         self.assertEqual(loaded[0]["stock_code"], "300502")
         self.assertEqual(loaded[0]["recommendation"], "持有")
 
+    def test_json_list_helpers_and_agent_selection(self):
+        path = self.tmp_path / "user" / "portfolio.json"
+        rows = [{"symbol": "300502", "quantity": 100}]
+        features.save_json_list(path, rows)
+        self.assertEqual(features.load_json_list(path), rows)
+        self.assertEqual(
+            features.normalize_agent_selection(["技术面", "资金流", "不存在"]),
+            ["TechnicalAgent", "FundFlowAgent"],
+        )
+
     def test_markdown_report_contains_recommendation_and_findings(self):
         result = {
             "success": True,

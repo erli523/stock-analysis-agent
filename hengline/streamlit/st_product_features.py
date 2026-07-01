@@ -21,6 +21,8 @@ DATA_DIR = PROJECT_ROOT / "data"
 USER_DATA_DIR = DATA_DIR / "user"
 OUTPUT_DIR = DATA_DIR / "output"
 FAVORITES_FILE = USER_DATA_DIR / "favorites.json"
+PORTFOLIO_FILE = USER_DATA_DIR / "portfolio.json"
+ALERTS_FILE = USER_DATA_DIR / "alerts.json"
 
 
 AGENT_LABELS = {
@@ -58,6 +60,22 @@ def save_favorites(favorites: Iterable[str]) -> None:
         if symbol and symbol not in cleaned:
             cleaned.append(symbol)
     FAVORITES_FILE.write_text(json.dumps(cleaned, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_json_list(path: Path) -> List[Dict[str, Any]]:
+    ensure_user_data_dir()
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def save_json_list(path: Path, rows: List[Dict[str, Any]]) -> None:
+    ensure_user_data_dir()
+    path.write_text(json.dumps(rows, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
 
 def add_favorite(symbol: str) -> List[str]:
@@ -396,3 +414,213 @@ def render_watchlist_page(current_ticker: str) -> Optional[str]:
     st.caption(f"自选股文件：{FAVORITES_FILE}")
     return selected
 
+
+def render_screener_page(get_stock_info_func, get_stock_price_data_func) -> None:
+    st.markdown("### 股票筛选器")
+    st.caption("输入候选股票池后，按估值、区间涨跌和趋势条件筛选。")
+
+    default_pool = ",".join(load_favorites() or ["300502", "300308", "NVDA", "AAPL"])
+    raw_codes = st.text_area("候选股票代码（逗号或换行分隔）", value=default_pool, height=90)
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        max_pe = st.number_input("最大 PE", min_value=0.0, value=120.0, step=5.0)
+    with col2:
+        max_pb = st.number_input("最大 PB", min_value=0.0, value=80.0, step=2.0)
+    with col3:
+        min_return = st.number_input("最小区间涨跌幅(%)", value=-100.0, step=5.0)
+    with col4:
+        require_uptrend = st.checkbox("要求收盘价高于 MA20", value=False)
+
+    if not st.button("运行筛选", type="primary"):
+        return
+
+    codes = []
+    for token in raw_codes.replace("\n", ",").split(","):
+        code = token.strip().upper()
+        if code and code not in codes:
+            codes.append(code)
+
+    rows = []
+    progress = st.progress(0, text="正在筛选股票...")
+    for idx, code in enumerate(codes, 1):
+        try:
+            info = get_stock_info_func(code) or {}
+            price = get_stock_price_data_func(code, period="3m")
+            if price is None or price.empty:
+                continue
+            price = price.copy()
+            price["Date"] = pd.to_datetime(price["Date"])
+            close = pd.to_numeric(price["Close"], errors="coerce")
+            latest_close = float(close.iloc[-1])
+            period_return = (latest_close / float(close.iloc[0]) - 1) * 100 if float(close.iloc[0]) else 0.0
+            ma20 = close.rolling(20).mean().iloc[-1] if len(close) >= 20 else None
+            pe = _safe_float(info.get("pe_ratio"))
+            pb = _safe_float(info.get("pb_ratio"))
+            uptrend_ok = not require_uptrend or (ma20 is not None and pd.notna(ma20) and latest_close >= float(ma20))
+            if pe <= max_pe and pb <= max_pb and period_return >= min_return and uptrend_ok:
+                rows.append({
+                    "股票": code,
+                    "名称": info.get("name") or info.get("company_name") or code,
+                    "最新价": round(latest_close, 2),
+                    "区间涨跌幅%": round(period_return, 2),
+                    "PE": round(pe, 2),
+                    "PB": round(pb, 2),
+                    "趋势": "强于MA20" if ma20 is not None and pd.notna(ma20) and latest_close >= float(ma20) else "弱于MA20",
+                })
+        except Exception as exc:
+            rows.append({"股票": code, "名称": "筛选失败", "最新价": None, "区间涨跌幅%": None, "PE": None, "PB": None, "趋势": str(exc)[:80]})
+        progress.progress(idx / max(len(codes), 1), text=f"已处理 {idx}/{len(codes)}")
+    progress.empty()
+
+    if rows:
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    else:
+        st.info("没有股票满足当前筛选条件。")
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+        if pd.isna(number):
+            return default
+        return number
+    except (TypeError, ValueError):
+        return default
+
+
+def render_backtest_page(ticker: str, price_data: pd.DataFrame) -> None:
+    st.markdown("### 简化回测")
+    st.caption("当前版本提供均线交叉策略回测，用来快速验证技术信号是否具备历史解释力。")
+    if price_data.empty or len(price_data) < 60:
+        st.info("回测至少需要 60 个交易日数据，请切换到 3M/6M/1Y 或更长周期。")
+        return
+
+    fast = st.slider("短均线", min_value=3, max_value=30, value=10)
+    slow = st.slider("长均线", min_value=20, max_value=120, value=30)
+    if fast >= slow:
+        st.warning("短均线周期必须小于长均线周期。")
+        return
+
+    data = price_data.copy().sort_values("Date")
+    close = pd.to_numeric(data["Close"], errors="coerce")
+    data["fast_ma"] = close.rolling(fast).mean()
+    data["slow_ma"] = close.rolling(slow).mean()
+    data["signal"] = (data["fast_ma"] > data["slow_ma"]).astype(int)
+    data["strategy_return"] = data["signal"].shift(1).fillna(0) * close.pct_change().fillna(0)
+    data["buy_hold_curve"] = (1 + close.pct_change().fillna(0)).cumprod()
+    data["strategy_curve"] = (1 + data["strategy_return"]).cumprod()
+
+    total_strategy = (float(data["strategy_curve"].iloc[-1]) - 1) * 100
+    total_hold = (float(data["buy_hold_curve"].iloc[-1]) - 1) * 100
+    trades = int((data["signal"].diff().abs() == 1).sum())
+    c1, c2, c3 = st.columns(3)
+    c1.metric("策略收益", f"{total_strategy:+.2f}%")
+    c2.metric("买入持有", f"{total_hold:+.2f}%")
+    c3.metric("交易次数", str(trades))
+
+    date_strs = pd.to_datetime(data["Date"]).dt.strftime("%Y-%m-%d").tolist()
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=date_strs, y=data["strategy_curve"], name="均线策略"))
+    fig.add_trace(go.Scatter(x=date_strs, y=data["buy_hold_curve"], name="买入持有"))
+    fig.update_layout(template="plotly_white", title=f"{ticker} 回测收益曲线", height=480, hovermode="x unified")
+    st.plotly_chart(fig, width="stretch")
+
+
+def render_portfolio_page(get_stock_info_func, get_stock_price_data_func) -> None:
+    st.markdown("### 投资组合管理")
+    holdings = load_json_list(PORTFOLIO_FILE)
+
+    with st.form("portfolio_add_form"):
+        cols = st.columns(4)
+        symbol = cols[0].text_input("股票代码").strip().upper()
+        quantity = cols[1].number_input("持仓数量", min_value=0.0, value=0.0, step=100.0)
+        cost = cols[2].number_input("成本价", min_value=0.0, value=0.0, step=1.0)
+        note = cols[3].text_input("备注")
+        submitted = st.form_submit_button("添加/更新持仓")
+    if submitted and symbol:
+        holdings = [row for row in holdings if row.get("symbol") != symbol]
+        holdings.append({"symbol": symbol, "quantity": quantity, "cost": cost, "note": note})
+        save_json_list(PORTFOLIO_FILE, holdings)
+        st.rerun()
+
+    if not holdings:
+        st.info("暂无持仓。")
+        return
+
+    rows = []
+    for row in holdings:
+        symbol = str(row.get("symbol", "")).upper()
+        try:
+            info = get_stock_info_func(symbol) or {}
+            price = get_stock_price_data_func(symbol, period="1m")
+            latest = _safe_float(price["Close"].iloc[-1]) if price is not None and not price.empty else 0.0
+        except Exception:
+            info, latest = {}, 0.0
+        quantity = _safe_float(row.get("quantity"))
+        cost = _safe_float(row.get("cost"))
+        market_value = latest * quantity
+        pnl = (latest - cost) * quantity if cost else 0.0
+        rows.append({
+            "股票": symbol,
+            "名称": info.get("name") or info.get("company_name") or symbol,
+            "数量": quantity,
+            "成本价": cost,
+            "最新价": round(latest, 2),
+            "市值": round(market_value, 2),
+            "浮动盈亏": round(pnl, 2),
+            "行业": info.get("industry") or info.get("sector") or "N/A",
+        })
+    df = pd.DataFrame(rows)
+    st.dataframe(df, width="stretch", hide_index=True)
+    st.metric("组合总市值", f"{df['市值'].sum():,.2f}")
+    st.metric("组合浮动盈亏", f"{df['浮动盈亏'].sum():+,.2f}")
+
+    remove_symbol = st.selectbox("删除持仓", [""] + [row["股票"] for row in rows])
+    if remove_symbol and st.button("确认删除"):
+        save_json_list(PORTFOLIO_FILE, [row for row in holdings if row.get("symbol") != remove_symbol])
+        st.rerun()
+
+
+def render_alerts_page(get_stock_price_data_func) -> None:
+    st.markdown("### 预警配置")
+    alerts = load_json_list(ALERTS_FILE)
+
+    with st.form("alert_add_form"):
+        cols = st.columns(4)
+        symbol = cols[0].text_input("股票代码").strip().upper()
+        above = cols[1].number_input("高于价格", min_value=0.0, value=0.0, step=1.0)
+        below = cols[2].number_input("低于价格", min_value=0.0, value=0.0, step=1.0)
+        enabled = cols[3].checkbox("启用", value=True)
+        submitted = st.form_submit_button("保存预警")
+    if submitted and symbol:
+        alerts = [row for row in alerts if row.get("symbol") != symbol]
+        alerts.append({"symbol": symbol, "above": above, "below": below, "enabled": enabled})
+        save_json_list(ALERTS_FILE, alerts)
+        st.rerun()
+
+    if not alerts:
+        st.info("暂无预警。")
+        return
+
+    rows = []
+    for alert in alerts:
+        symbol = str(alert.get("symbol", "")).upper()
+        latest = 0.0
+        try:
+            price = get_stock_price_data_func(symbol, period="1m")
+            latest = _safe_float(price["Close"].iloc[-1]) if price is not None and not price.empty else 0.0
+        except Exception:
+            pass
+        above = _safe_float(alert.get("above"))
+        below = _safe_float(alert.get("below"))
+        triggered = bool(alert.get("enabled")) and ((above and latest >= above) or (below and latest <= below))
+        rows.append({
+            "股票": symbol,
+            "最新价": round(latest, 2),
+            "高于": above or "",
+            "低于": below or "",
+            "启用": bool(alert.get("enabled")),
+            "状态": "触发" if triggered else "未触发",
+        })
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    st.caption(f"预警配置文件：{ALERTS_FILE}。当前版本支持本地配置和手动检查，可继续接 APScheduler/邮件/Server酱。")
