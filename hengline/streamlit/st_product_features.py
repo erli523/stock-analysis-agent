@@ -194,6 +194,78 @@ def _numeric_columns(df: pd.DataFrame) -> List[str]:
     return columns
 
 
+def _render_income_trend(income_df: pd.DataFrame) -> None:
+    """绘制利润表关键指标趋势折线图。"""
+    numeric_cols = _numeric_columns(income_df)
+    preferred = [
+        col for col in ["operatingRevenue", "totalRevenue", "netProfit", "netIncome", "grossProfit"]
+        if col in numeric_cols
+    ]
+    selected = preferred[:3] or numeric_cols[:3]
+    if not selected:
+        return
+
+    fig = go.Figure()
+    x_values = income_df.index.astype(str).tolist()
+    for column in selected:
+        fig.add_trace(go.Scatter(
+            x=x_values,
+            y=pd.to_numeric(income_df[column], errors="coerce"),
+            mode="lines+markers",
+            name=column,
+        ))
+    fig.update_layout(
+        template="plotly_white",
+        title="利润表关键指标趋势",
+        xaxis_title="报告期",
+        yaxis_title="数值",
+        height=420,
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig, width="stretch")
+
+
+def _collect_radar_items(financial_data: Dict[str, Any]) -> Dict[str, float]:
+    """从财务比率/估值指标中提取雷达图可用的数值项（最多 8 个）。"""
+    ratios: Dict[str, Any] = {}
+    for key in ("financial_ratios", "valuation_metrics"):
+        item = financial_data.get(key)
+        if isinstance(item, dict):
+            ratios.update(item)
+        elif isinstance(item, pd.DataFrame) and not item.empty:
+            ratios.update(item.iloc[-1].to_dict())
+
+    radar_items: Dict[str, float] = {}
+    for key, value in ratios.items():
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if pd.notna(number) and number > 0:
+            radar_items[key] = min(number, 100.0)
+        if len(radar_items) >= 8:
+            break
+    return radar_items
+
+
+def _render_financial_radar(radar_items: Dict[str, float]) -> None:
+    """绘制财务/估值指标雷达图。"""
+    categories = list(radar_items.keys())
+    values = list(radar_items.values())
+    fig = go.Figure()
+    fig.add_trace(go.Scatterpolar(
+        r=values + values[:1], theta=categories + categories[:1], fill="toself", name="指标"
+    ))
+    fig.update_layout(
+        template="plotly_white",
+        title="财务/估值指标雷达图",
+        polar=dict(radialaxis=dict(visible=True)),
+        height=440,
+        margin=dict(l=32, r=32, t=56, b=32),
+    )
+    st.plotly_chart(fig, width="stretch")
+
+
 def render_financial_visuals(financial_data: Dict[str, Any]) -> None:
     available_frames = {
         key: value for key, value in financial_data.items()
@@ -205,64 +277,11 @@ def render_financial_visuals(financial_data: Dict[str, Any]) -> None:
 
     income_df = available_frames.get("income_statement")
     if income_df is not None:
-        numeric_cols = _numeric_columns(income_df)
-        preferred = [
-            col for col in ["operatingRevenue", "totalRevenue", "netProfit", "netIncome", "grossProfit"]
-            if col in numeric_cols
-        ]
-        selected = preferred[:3] or numeric_cols[:3]
-        if selected:
-            fig = go.Figure()
-            x_values = income_df.index.astype(str).tolist()
-            for column in selected:
-                fig.add_trace(go.Scatter(
-                    x=x_values,
-                    y=pd.to_numeric(income_df[column], errors="coerce"),
-                    mode="lines+markers",
-                    name=column,
-                ))
-            fig.update_layout(
-                template="plotly_white",
-                title="利润表关键指标趋势",
-                xaxis_title="报告期",
-                yaxis_title="数值",
-                height=420,
-                hovermode="x unified",
-            )
-            st.plotly_chart(fig, width="stretch")
+        _render_income_trend(income_df)
 
-    ratios = {}
-    for key in ("financial_ratios", "valuation_metrics"):
-        item = financial_data.get(key)
-        if isinstance(item, dict):
-            ratios.update(item)
-        elif isinstance(item, pd.DataFrame) and not item.empty:
-            ratios.update(item.iloc[-1].to_dict())
-
-    radar_items = {}
-    for key, value in ratios.items():
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            continue
-        if pd.notna(number) and number > 0:
-            radar_items[key] = min(number, 100.0)
-        if len(radar_items) >= 8:
-            break
-
+    radar_items = _collect_radar_items(financial_data)
     if len(radar_items) >= 3:
-        categories = list(radar_items.keys())
-        values = list(radar_items.values())
-        fig = go.Figure()
-        fig.add_trace(go.Scatterpolar(r=values + values[:1], theta=categories + categories[:1], fill="toself", name="指标"))
-        fig.update_layout(
-            template="plotly_white",
-            title="财务/估值指标雷达图",
-            polar=dict(radialaxis=dict(visible=True)),
-            height=440,
-            margin=dict(l=32, r=32, t=56, b=32),
-        )
-        st.plotly_chart(fig, width="stretch")
+        _render_financial_radar(radar_items)
 
 
 def save_analysis_result(result: Dict[str, Any], stock_code: str) -> Optional[Path]:
@@ -494,41 +513,18 @@ def render_screener_page(get_stock_info_func, get_stock_price_data_func) -> None
     if not st.button("运行筛选", type="primary"):
         return
 
-    codes = []
-    for token in raw_codes.replace("\n", ",").split(","):
-        code = token.strip().upper()
-        if code and code not in codes:
-            codes.append(code)
+    codes = _parse_code_pool(raw_codes)
+    criteria = {
+        "max_pe": max_pe, "max_pb": max_pb,
+        "min_return": min_return, "require_uptrend": require_uptrend,
+    }
 
     rows = []
     progress = st.progress(0, text="正在筛选股票...")
     for idx, code in enumerate(codes, 1):
-        try:
-            info = get_stock_info_func(code) or {}
-            price = get_stock_price_data_func(code, period="3m")
-            if price is None or price.empty:
-                continue
-            price = price.copy()
-            price["Date"] = pd.to_datetime(price["Date"])
-            close = pd.to_numeric(price["Close"], errors="coerce")
-            latest_close = float(close.iloc[-1])
-            period_return = (latest_close / float(close.iloc[0]) - 1) * 100 if float(close.iloc[0]) else 0.0
-            ma20 = close.rolling(20).mean().iloc[-1] if len(close) >= 20 else None
-            pe = _safe_float(info.get("pe_ratio"))
-            pb = _safe_float(info.get("pb_ratio"))
-            uptrend_ok = not require_uptrend or (ma20 is not None and pd.notna(ma20) and latest_close >= float(ma20))
-            if pe <= max_pe and pb <= max_pb and period_return >= min_return and uptrend_ok:
-                rows.append({
-                    "股票": code,
-                    "名称": info.get("name") or info.get("company_name") or code,
-                    "最新价": round(latest_close, 2),
-                    "区间涨跌幅%": round(period_return, 2),
-                    "PE": round(pe, 2),
-                    "PB": round(pb, 2),
-                    "趋势": "强于MA20" if ma20 is not None and pd.notna(ma20) and latest_close >= float(ma20) else "弱于MA20",
-                })
-        except Exception as exc:
-            rows.append({"股票": code, "名称": "筛选失败", "最新价": None, "区间涨跌幅%": None, "PE": None, "PB": None, "趋势": str(exc)[:80]})
+        row = _screen_one_stock(code, criteria, get_stock_info_func, get_stock_price_data_func)
+        if row is not None:
+            rows.append(row)
         progress.progress(idx / max(len(codes), 1), text=f"已处理 {idx}/{len(codes)}")
     progress.empty()
 
@@ -536,6 +532,52 @@ def render_screener_page(get_stock_info_func, get_stock_price_data_func) -> None
         st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     else:
         st.info("没有股票满足当前筛选条件。")
+
+
+def _parse_code_pool(raw_codes: str) -> list:
+    """将文本框中的候选代码解析为去重后的大写代码列表。"""
+    codes = []
+    for token in raw_codes.replace("\n", ",").split(","):
+        code = token.strip().upper()
+        if code and code not in codes:
+            codes.append(code)
+    return codes
+
+
+def _screen_one_stock(code, criteria, get_stock_info_func, get_stock_price_data_func):
+    """对单只股票执行筛选，返回结果行 dict；不满足条件返回 None，异常返回错误行。"""
+    try:
+        info = get_stock_info_func(code) or {}
+        price = get_stock_price_data_func(code, period="3m")
+        if price is None or price.empty:
+            return None
+        price = price.copy()
+        price["Date"] = pd.to_datetime(price["Date"])
+        close = pd.to_numeric(price["Close"], errors="coerce")
+        latest_close = float(close.iloc[-1])
+        first_close = float(close.iloc[0])
+        period_return = (latest_close / first_close - 1) * 100 if first_close else 0.0
+        ma20 = close.rolling(20).mean().iloc[-1] if len(close) >= 20 else None
+        pe = _safe_float(info.get("pe_ratio"))
+        pb = _safe_float(info.get("pb_ratio"))
+        above_ma20 = ma20 is not None and pd.notna(ma20) and latest_close >= float(ma20)
+        uptrend_ok = not criteria["require_uptrend"] or above_ma20
+
+        if not (pe <= criteria["max_pe"] and pb <= criteria["max_pb"]
+                and period_return >= criteria["min_return"] and uptrend_ok):
+            return None
+        return {
+            "股票": code,
+            "名称": info.get("name") or info.get("company_name") or code,
+            "最新价": round(latest_close, 2),
+            "区间涨跌幅%": round(period_return, 2),
+            "PE": round(pe, 2),
+            "PB": round(pb, 2),
+            "趋势": "强于MA20" if above_ma20 else "弱于MA20",
+        }
+    except Exception as exc:
+        return {"股票": code, "名称": "筛选失败", "最新价": None, "区间涨跌幅%": None,
+                "PE": None, "PB": None, "趋势": str(exc)[:80]}
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:

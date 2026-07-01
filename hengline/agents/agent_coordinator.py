@@ -103,86 +103,55 @@ class AgentCoordinator:
             model_type = llm_config.get("provider", "openai").lower()
             enable_memory = embedding_config.get("enable_memory", True)
 
-            agent_configs = {
-                "FundamentalAgent": AgentConfig(
-                    agent_name="Fundamental Analysis Agent",
-                    description="Analyzes financial statements, valuation, profitability, and company fundamentals.",
-                    model_name=model_name,
-                    model_type=model_type,
-                    enable_memory=enable_memory,
-                    llm_config=llm_config,
-                    embedding_config=embedding_config,
+            # 数据驱动的 Agent 规格表：(类, 显示名, 描述, 额外配置)
+            agent_specs = {
+                "FundamentalAgent": (
+                    FundamentalAgent, "Fundamental Analysis Agent",
+                    "Analyzes financial statements, valuation, profitability, and company fundamentals.", {},
                 ),
-                "TechnicalAgent": AgentConfig(
-                    agent_name="Technical Analysis Agent",
-                    description="Analyzes price action, volume, trend, and technical indicators.",
-                    model_name=model_name,
-                    model_type=model_type,
-                    enable_memory=enable_memory,
-                    llm_config=llm_config,
-                    embedding_config=embedding_config,
+                "TechnicalAgent": (
+                    TechnicalAgent, "Technical Analysis Agent",
+                    "Analyzes price action, volume, trend, and technical indicators.", {},
                 ),
-                "IndustryMacroAgent": AgentConfig(
-                    agent_name="Industry Macro Agent",
-                    description="Analyzes industry trends, macro conditions, and market context.",
-                    model_name=model_name,
-                    model_type=model_type,
-                    enable_memory=enable_memory,
-                    llm_config=llm_config,
-                    embedding_config=embedding_config,
+                "IndustryMacroAgent": (
+                    IndustryMacroAgent, "Industry Macro Agent",
+                    "Analyzes industry trends, macro conditions, and market context.", {},
                 ),
-                "SentimentAgent": AgentConfig(
-                    agent_name="Sentiment Agent",
-                    description="Analyzes news, market sentiment, and investor behavior.",
-                    model_name=model_name,
-                    model_type=model_type,
-                    enable_memory=enable_memory,
-                    llm_config=llm_config,
-                    embedding_config=embedding_config,
+                "SentimentAgent": (
+                    SentimentAgent, "Sentiment Agent",
+                    "Analyzes news, market sentiment, and investor behavior.", {},
                 ),
-                "FundFlowAgent": AgentConfig(
-                    agent_name="Fund Flow Agent",
-                    description="Analyzes capital flow, institutional activity, and volume behavior.",
-                    model_name=model_name,
-                    model_type=model_type,
-                    enable_memory=enable_memory,
-                    llm_config=llm_config,
-                    embedding_config=embedding_config,
+                "FundFlowAgent": (
+                    FundFlowAgent, "Fund Flow Agent",
+                    "Analyzes capital flow, institutional activity, and volume behavior.", {},
                 ),
-                "ESGRiskAgent": AgentConfig(
-                    agent_name="ESG Risk Agent",
-                    description="Analyzes ESG, governance, controversy, and sustainability risk.",
-                    model_name=model_name,
-                    model_type=model_type,
-                    enable_memory=enable_memory,
-                    llm_config=llm_config,
-                    embedding_config=embedding_config,
+                "ESGRiskAgent": (
+                    ESGRiskAgent, "ESG Risk Agent",
+                    "Analyzes ESG, governance, controversy, and sustainability risk.", {},
                 ),
-                "ChiefStrategyAgent": AgentConfig(
-                    agent_name="Chief Strategy Agent",
-                    description="Synthesizes specialist outputs into a final investment recommendation.",
-                    model_name=model_name,
-                    model_type=model_type,
-                    enable_memory=enable_memory,
-                    memory_top_k=5,
-                    llm_config=llm_config,
-                    embedding_config=embedding_config,
+                "ChiefStrategyAgent": (
+                    ChiefStrategyAgent, "Chief Strategy Agent",
+                    "Synthesizes specialist outputs into a final investment recommendation.",
+                    {"memory_top_k": 5},
                 ),
             }
 
-            for agent_name, specific_config in self.config.get("agents", {}).items():
-                if agent_name in agent_configs:
-                    agent_configs[agent_name] = agent_configs[agent_name].model_copy(update=specific_config)
-
-            self.agents = {
-                "FundamentalAgent": FundamentalAgent(agent_configs["FundamentalAgent"]),
-                "TechnicalAgent": TechnicalAgent(agent_configs["TechnicalAgent"]),
-                "IndustryMacroAgent": IndustryMacroAgent(agent_configs["IndustryMacroAgent"]),
-                "SentimentAgent": SentimentAgent(agent_configs["SentimentAgent"]),
-                "FundFlowAgent": FundFlowAgent(agent_configs["FundFlowAgent"]),
-                "ESGRiskAgent": ESGRiskAgent(agent_configs["ESGRiskAgent"]),
-                "ChiefStrategyAgent": ChiefStrategyAgent(agent_configs["ChiefStrategyAgent"]),
-            }
+            overrides = self.config.get("agents", {})
+            self.agents = {}
+            for name, (agent_cls, display_name, description, extra) in agent_specs.items():
+                agent_config = AgentConfig(
+                    agent_name=display_name,
+                    description=description,
+                    model_name=model_name,
+                    model_type=model_type,
+                    enable_memory=enable_memory,
+                    llm_config=llm_config,
+                    embedding_config=embedding_config,
+                    **extra,
+                )
+                if name in overrides:
+                    agent_config = agent_config.model_copy(update=overrides[name])
+                self.agents[name] = agent_cls(agent_config)
 
             shared_stock_manager = StockDataManager()
             for agent_name, agent in self.agents.items():

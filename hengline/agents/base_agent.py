@@ -37,6 +37,83 @@ except ImportError as e:
         # 其他导入错误则重新抛出
         raise
 
+# ── LLM 分析提示词模板（提取为模块常量，便于维护与复用）──────────────
+_COMMON_RULE = (
+    '只能使用当前任务和相关知识中明确提供的数据；如果某类数据缺失，'
+    '请说明"当前数据源不可用/未提供"，不要编造机构持仓、高管交易、ESG评级或新闻事件。'
+)
+
+# 带记忆的提示词模板（含 chat_history）
+ANALYSIS_TEMPLATE_WITH_MEMORY = f"""
+你是{{description}}。请基于提供的信息和历史对话进行专业、客观的分析。
+{_COMMON_RULE}
+{{reflection_section}}
+相关知识：
+{{knowledge_text}}
+
+历史对话：
+{{chat_history}}
+
+当前任务：
+{{input}}
+
+请输出JSON格式的分析结果。
+"""
+
+# 普通提示词模板（无 chat_history）
+ANALYSIS_TEMPLATE_PLAIN = f"""
+你是{{description}}。请基于提供的信息进行专业、客观的分析。
+{_COMMON_RULE}
+{{reflection_section}}
+相关知识：
+{{knowledge_text}}
+
+任务：
+{{input}}
+
+请输出JSON格式的分析结果。
+"""
+
+
+class DummyVectorStore:
+    """FAISS 不可用或向量存储创建失败时的空后备存储。"""
+
+    def as_retriever(self, **kwargs):
+        class _DummyRetriever:
+            def get_relevant_documents(self, query):
+                return []
+        return _DummyRetriever()
+
+
+class LlamaIndexToLangChainEmbeddingAdapter:
+    """适配层：让 llama_index 的 embedding 兼容 langchain 的 FAISS 接口。"""
+
+    _FALLBACK_DIM = 768
+
+    def __init__(self, llama_embedding):
+        self.llama_embedding = llama_embedding
+
+    def _embed_one(self, text):
+        try:
+            if hasattr(self.llama_embedding, 'get_text_embedding'):
+                return self.llama_embedding.get_text_embedding(text)
+            if callable(self.llama_embedding):
+                return self.llama_embedding(text)
+            return [0.1] * self._FALLBACK_DIM
+        except Exception as e:
+            warning(f"嵌入失败: {str(e)}")
+            return [0.1] * self._FALLBACK_DIM
+
+    def embed_documents(self, texts):
+        return [self._embed_one(text) for text in texts]
+
+    def embed_query(self, text):
+        return self._embed_one(text)
+
+    def __call__(self, text):
+        return self.embed_query(text)
+
+
 class AgentConfig(BaseModel):
     """智能体配置"""
     agent_name: str
@@ -249,6 +326,24 @@ class BaseAgent(ABC):
 
             return SimpleLLMWrapper(self.client, self.config.model_name)
 
+    def _build_faiss_vectorstore(self):
+        """构建 FAISS 向量存储；失败时回退到 DummyVectorStore，彻底失败返回 None。"""
+        llama_embedding = get_embedding_client(
+            model_type=self.config.embedding_type,
+            model_name=self.config.embedding_model,
+        )
+        embedding = LlamaIndexToLangChainEmbeddingAdapter(llama_embedding)
+
+        from langchain_core.documents import Document
+        default_doc = Document(page_content="Empty memory initialization document")
+        try:
+            vectorstore = FAISS.from_documents([default_doc], embedding)
+            info("向量存储创建成功")
+            return vectorstore
+        except Exception as vec_error:
+            warning(f"创建向量存储失败，回退到虚拟向量存储: {str(vec_error)}")
+            return DummyVectorStore()
+
     def _init_memory(self):
         """
         初始化向量记忆系统
@@ -257,96 +352,13 @@ class BaseAgent(ABC):
             VectorStoreRetrieverMemory实例
         """
         try:
-            # 首先检查FAISS是否可用
             if not FAISS_AVAILABLE:
-                warning("FAISS不可用，直接使用虚拟向量存储作为替代方案")
-                # 创建一个空的索引作为后备
-                class DummyVectorStore:
-                    def as_retriever(self, **kwargs):
-                        class DummyRetriever:
-                            def get_relevant_documents(self, query):
-                                return []
-                        return DummyRetriever()
+                warning("FAISS不可用，使用虚拟向量存储作为后备")
                 vectorstore = DummyVectorStore()
-                warning("使用虚拟向量存储作为后备")
-
             else:
-                # 创建一个适配层，使llama_index的embedding兼容langchain的FAISS
-                class LlamaIndexToLangChainEmbeddingAdapter:
-                    def __init__(self, llama_embedding):
-                        self.llama_embedding = llama_embedding
-
-                    def embed_documents(self, texts):
-                        # 适配llama_index的嵌入方法到langchain的接口，添加异常处理
-                        results = []
-                        for text in texts:
-                            try:
-                                # 尝试不同的嵌入方法
-                                if hasattr(self.llama_embedding, 'get_text_embedding'):
-                                    results.append(self.llama_embedding.get_text_embedding(text))
-                                elif callable(self.llama_embedding):
-                                    results.append(self.llama_embedding(text))
-                                else:
-                                    # 返回默认嵌入向量
-                                    results.append([0.1] * 768)  # 假设768维向量
-                            except Exception as e:
-                                warning(f"嵌入文档失败: {str(e)}")
-                                results.append([0.1] * 768)
-                        return results
-
-                    def embed_query(self, text):
-                        # 实现query嵌入方法，确保适配器可调用
-                        try:
-                            if hasattr(self.llama_embedding, 'get_text_embedding'):
-                                return self.llama_embedding.get_text_embedding(text)
-                            elif callable(self.llama_embedding):
-                                return self.llama_embedding(text)
-                            else:
-                                return [0.1] * 768
-                        except Exception as e:
-                            warning(f"嵌入查询失败: {str(e)}")
-                            return [0.1] * 768
-
-                    def __call__(self, text):
-                        # 添加__call__方法，确保适配器可以直接被调用
-                        return self.embed_query(text)
-
-                # 从embedding_client获取嵌入模型
-                llama_embedding = get_embedding_client(
-                    model_type=self.config.embedding_type,
-                    model_name=self.config.embedding_model
-                )
-
-                # 创建适配的embedding对象
-                embedding = LlamaIndexToLangChainEmbeddingAdapter(llama_embedding)
-
-                # 创建向量存储 - 使用一个默认文档避免空列表错误
-                from langchain_core.documents import Document
-                default_doc = Document(page_content="Empty memory initialization document")
-                
-                try:
-                    vectorstore = FAISS.from_documents([default_doc], embedding)
-                    info("向量存储创建成功")
-                except Exception as vec_error:
-                    warning(f"创建向量存储失败，尝试使用备选方法: {str(vec_error)}")
-                    # 备选方法：直接创建FAISS索引
-                    try:
-                        # 创建一个简单的嵌入向量
-                        import numpy as np
-                        from langchain_community.vectorstores.utils import maximal_marginal_relevance
-                        
-                        # 创建一个空的索引作为后备
-                        class DummyVectorStore:
-                            def as_retriever(self, **kwargs):
-                                class DummyRetriever:
-                                    def get_relevant_documents(self, query):
-                                        return []
-                                return DummyRetriever()
-                        vectorstore = DummyVectorStore()
-                        warning("使用虚拟向量存储作为后备")
-                    except Exception as fallback_error:
-                        error(f"创建后备向量存储也失败: {str(fallback_error)}")
-                        return None
+                vectorstore = self._build_faiss_vectorstore()
+                if vectorstore is None:
+                    return None
 
             # 创建检索器
             retriever = vectorstore.as_retriever(search_kwargs={"k": self.config.memory_top_k})
@@ -433,76 +445,40 @@ class BaseAgent(ABC):
             knowledge_text = chr(10).join(knowledge) if knowledge else "无"
             # Reflection 提示（重试时非空，首次调用为空字符串）
             reflection_text = self._reflection_hint_text()
+            # 各模板共用的字段赋值
+            base_assigns = dict(
+                description=lambda _: self.description,
+                knowledge_text=lambda _: knowledge_text,
+                reflection_section=lambda _: reflection_text,
+            )
 
-            # 如果启用了记忆，使用记忆增强的LLM调用
+            # 优先使用记忆增强的 LLM 调用
             if self.memory:
                 try:
-                    template = """
-                    你是{description}。请基于提供的信息和历史对话进行专业、客观的分析。
-                    只能使用当前任务和相关知识中明确提供的数据；如果某类数据缺失，请说明"当前数据源不可用/未提供"，不要编造机构持仓、高管交易、ESG评级或新闻事件。
-                    {reflection_section}
-                    相关知识：
-                    {knowledge_text}
-                    
-                    历史对话：
-                    {chat_history}
-                    
-                    当前任务：
-                    {input}
-                    
-                    请输出JSON格式的分析结果。
-                    """
-
-                    prompt_template = ChatPromptTemplate.from_template(template)
-
                     chain = RunnablePassthrough.assign(
                         chat_history=self.memory.load_memory_variables,
-                        description=lambda _: self.description,
-                        knowledge_text=lambda _: knowledge_text,
-                        reflection_section=lambda _: reflection_text
-                    ) | prompt_template | self.langchain_llm | StrOutputParser()
+                        **base_assigns,
+                    ) | ChatPromptTemplate.from_template(ANALYSIS_TEMPLATE_WITH_MEMORY) | self.langchain_llm | StrOutputParser()
 
                     response_text = chain.invoke({"input": prompt})
-
-                    self.memory.save_context(
-                        {"input": prompt},
-                        {"output": response_text}
-                    )
-
+                    self.memory.save_context({"input": prompt}, {"output": response_text})
                     return self._parse_llm_json(response_text)
                 except Exception as mem_e:
                     warning(f"使用记忆系统失败，回退到普通调用: {str(mem_e)}")
 
-            # 普通调用方式（备用）
-            template = """
-            你是{description}。请基于提供的信息进行专业、客观的分析。
-            只能使用当前任务和相关知识中明确提供的数据；如果某类数据缺失，请说明"当前数据源不可用/未提供"，不要编造机构持仓、高管交易、ESG评级或新闻事件。
-            {reflection_section}
-            相关知识：
-            {knowledge_text}
-            
-            任务：
-            {input}
-            
-            请输出JSON格式的分析结果。
-            """
-
-            prompt_template = ChatPromptTemplate.from_template(template)
-
+            # 普通调用方式（无记忆或记忆失败时的备用路径）
             chain = RunnablePassthrough.assign(
-                description=lambda _: self.description,
-                knowledge_text=lambda _: knowledge_text,
-                reflection_section=lambda _: reflection_text
-            ) | prompt_template | self.langchain_llm | StrOutputParser()
+                **base_assigns,
+            ) | ChatPromptTemplate.from_template(ANALYSIS_TEMPLATE_PLAIN) | self.langchain_llm | StrOutputParser()
 
             response_text = chain.invoke({"input": prompt})
-
-            # 解析JSON响应
             return self._parse_llm_json(response_text)
 
         except Exception as e:
             error(f"LLM分析生成失败: {str(e)}")
             raise
+
+
     def _parse_llm_json(self, response_text: Any) -> Dict[str, Any]:
         if isinstance(response_text, dict):
             return response_text

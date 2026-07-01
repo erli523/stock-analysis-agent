@@ -43,6 +43,127 @@ from hengline.streamlit.st_product_features import (  # noqa: E402
 )
 
 
+# 全局页面样式（从 setup_page 内联 <style> 提取为模块常量，便于集中维护）
+APP_CSS = """
+<style>
+.block-container {
+    padding-top: 1.4rem;
+    padding-bottom: 2.5rem;
+    max-width: 1500px;
+}
+[data-testid="stSidebar"] {
+    background: #f4f7fb;
+    border-right: 1px solid #dde4ee;
+}
+.app-header {
+    border-bottom: 1px solid #e5e7eb;
+    padding: 0.4rem 0 1.1rem 0;
+    margin-bottom: 1.2rem;
+}
+.main-title {
+    color: #073b74;
+    font-weight: 800;
+    font-size: 2.15rem;
+    line-height: 1.15;
+    margin: 0;
+}
+.sub-title {
+    color: #667085;
+    font-size: 0.95rem;
+    margin-top: 0.45rem;
+}
+.context-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.85rem;
+}
+.context-pill {
+    border: 1px solid #d7dee8;
+    border-radius: 999px;
+    padding: 0.25rem 0.7rem;
+    color: #344054;
+    background: #ffffff;
+    font-size: 0.85rem;
+}
+.section-title {
+    color: #111827;
+    font-weight: 750;
+    font-size: 1.15rem;
+    margin: 1.25rem 0 0.75rem 0;
+}
+.data-note {
+    color: #667085;
+    font-size: 0.88rem;
+    margin-bottom: 0.75rem;
+}
+.insight-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 0.75rem;
+    margin: 0.8rem 0 1.1rem 0;
+}
+.insight-card {
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    border: 1px solid #dfe7f1;
+    border-radius: 0.5rem;
+    padding: 0.85rem 0.95rem;
+    min-height: 6.2rem;
+}
+.insight-label {
+    color: #667085;
+    font-size: 0.78rem;
+    margin-bottom: 0.35rem;
+}
+.insight-value {
+    color: #0f172a;
+    font-size: 1.22rem;
+    line-height: 1.2;
+    font-weight: 780;
+}
+.insight-note {
+    color: #526071;
+    font-size: 0.82rem;
+    line-height: 1.35;
+    margin-top: 0.42rem;
+}
+.callout {
+    border: 1px solid #dbe5f2;
+    border-radius: 0.5rem;
+    padding: 0.9rem 1rem;
+    background: #f8fafc;
+    margin: 0.75rem 0;
+}
+.callout strong { color: #0f172a; }
+.split-panel {
+    border: 1px solid #e2e8f0;
+    border-radius: 0.5rem;
+    background: #ffffff;
+    padding: 0.9rem 1rem;
+}
+div[data-testid="stMetric"] {
+    background: #ffffff;
+    border: 1px solid #e6ebf2;
+    border-radius: 0.5rem;
+    padding: 0.7rem 0.85rem;
+}
+div[data-testid="stMetricLabel"] {
+    color: #667085;
+}
+.recommendation-box {
+    border: 1px solid #e5e7eb;
+    border-left: 0.45rem solid #0f766e;
+    border-radius: 0.5rem;
+    padding: 1rem 1.2rem;
+    background: #f8fafc;
+    margin: 0.5rem 0 1rem 0;
+}
+.recommendation-box h4 { margin: 0 0 0.4rem 0; color: #111827; }
+.muted-small { color: #6b7280; font-size: 0.86rem; }
+</style>
+"""
+
+
 @st.cache_resource(show_spinner="Initializing agent system (first time only)...")
 def get_coordinator(use_memory: bool, enabled_agents: tuple[str, ...]) -> AgentCoordinator:
     """缓存 AgentCoordinator 单例，避免每次点击重建 7 个 Agent 实例。
@@ -103,129 +224,26 @@ CHART_LAYOUT = {
 }
 
 
+def _tick_step(n: int) -> int:
+    """按数据量选择 x 轴刻度抽样步长，避免标签过密。"""
+    if n > 120:
+        return max(1, n // 20)
+    if n > 40:
+        return max(1, n // 10)
+    return 1
+
+
+def _category_axis(date_strs: list[str]) -> dict:
+    """构造 category 型 x 轴配置：按交易日压缩横轴、去除非交易日空白。"""
+    if not date_strs:
+        return {}
+    tick_vals = date_strs[::_tick_step(len(date_strs))]
+    return dict(type="category", tickangle=45, tickmode="array", tickvals=tick_vals)
+
+
 def setup_page():
     st.set_page_config(page_title="股票数据分析平台", page_icon="📈", layout="wide")
-    st.markdown(
-        """
-        <style>
-        .block-container {
-            padding-top: 1.4rem;
-            padding-bottom: 2.5rem;
-            max-width: 1500px;
-        }
-        [data-testid="stSidebar"] {
-            background: #f4f7fb;
-            border-right: 1px solid #dde4ee;
-        }
-        .app-header {
-            border-bottom: 1px solid #e5e7eb;
-            padding: 0.4rem 0 1.1rem 0;
-            margin-bottom: 1.2rem;
-        }
-        .main-title {
-            color: #073b74;
-            font-weight: 800;
-            font-size: 2.15rem;
-            line-height: 1.15;
-            margin: 0;
-        }
-        .sub-title {
-            color: #667085;
-            font-size: 0.95rem;
-            margin-top: 0.45rem;
-        }
-        .context-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-            margin-top: 0.85rem;
-        }
-        .context-pill {
-            border: 1px solid #d7dee8;
-            border-radius: 999px;
-            padding: 0.25rem 0.7rem;
-            color: #344054;
-            background: #ffffff;
-            font-size: 0.85rem;
-        }
-        .section-title {
-            color: #111827;
-            font-weight: 750;
-            font-size: 1.15rem;
-            margin: 1.25rem 0 0.75rem 0;
-        }
-        .data-note {
-            color: #667085;
-            font-size: 0.88rem;
-            margin-bottom: 0.75rem;
-        }
-        .insight-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-            gap: 0.75rem;
-            margin: 0.8rem 0 1.1rem 0;
-        }
-        .insight-card {
-            background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-            border: 1px solid #dfe7f1;
-            border-radius: 0.5rem;
-            padding: 0.85rem 0.95rem;
-            min-height: 6.2rem;
-        }
-        .insight-label {
-            color: #667085;
-            font-size: 0.78rem;
-            margin-bottom: 0.35rem;
-        }
-        .insight-value {
-            color: #0f172a;
-            font-size: 1.22rem;
-            line-height: 1.2;
-            font-weight: 780;
-        }
-        .insight-note {
-            color: #526071;
-            font-size: 0.82rem;
-            line-height: 1.35;
-            margin-top: 0.42rem;
-        }
-        .callout {
-            border: 1px solid #dbe5f2;
-            border-radius: 0.5rem;
-            padding: 0.9rem 1rem;
-            background: #f8fafc;
-            margin: 0.75rem 0;
-        }
-        .callout strong { color: #0f172a; }
-        .split-panel {
-            border: 1px solid #e2e8f0;
-            border-radius: 0.5rem;
-            background: #ffffff;
-            padding: 0.9rem 1rem;
-        }
-        div[data-testid="stMetric"] {
-            background: #ffffff;
-            border: 1px solid #e6ebf2;
-            border-radius: 0.5rem;
-            padding: 0.7rem 0.85rem;
-        }
-        div[data-testid="stMetricLabel"] {
-            color: #667085;
-        }
-        .recommendation-box {
-            border: 1px solid #e5e7eb;
-            border-left: 0.45rem solid #0f766e;
-            border-radius: 0.5rem;
-            padding: 1rem 1.2rem;
-            background: #f8fafc;
-            margin: 0.5rem 0 1rem 0;
-        }
-        .recommendation-box h4 { margin: 0 0 0.4rem 0; color: #111827; }
-        .muted-small { color: #6b7280; font-size: 0.86rem; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown(APP_CSS, unsafe_allow_html=True)
 
 
 def stock_display_name(stock_info: dict, ticker: str) -> str:
@@ -588,17 +606,7 @@ def show_candlestick(ticker: str, price_data: pd.DataFrame, include_analysis: bo
 
     # 将日期转为字符串，配合 category x 轴使用，可自动去除非交易日（周末/节假日）空白
     date_strs = price_data["Date"].dt.strftime("%Y-%m-%d").tolist()
-
-    # 根据数据量动态控制 x 轴刻度密度，避免标签过密
-    n = len(date_strs)
-    if n > 120:
-        step = max(1, n // 20)
-        tick_vals = date_strs[::step]
-    elif n > 40:
-        step = max(1, n // 10)
-        tick_vals = date_strs[::step]
-    else:
-        tick_vals = date_strs
+    xaxis_cfg = _category_axis(date_strs)
 
     fig = go.Figure(
         data=[
@@ -619,12 +627,7 @@ def show_candlestick(ticker: str, price_data: pd.DataFrame, include_analysis: bo
         xaxis_title="日期",
         yaxis_title="价格",
         height=560,
-        xaxis=dict(
-            type="category",
-            tickangle=45,
-            tickmode="array",
-            tickvals=tick_vals,
-        ),
+        xaxis=xaxis_cfg,
     )
     st.plotly_chart(fig, width="stretch")
 
@@ -638,12 +641,7 @@ def show_candlestick(ticker: str, price_data: pd.DataFrame, include_analysis: bo
             height=260,
             xaxis_title="日期",
             yaxis_title="成交量（万股）",
-            xaxis=dict(
-                type="category",
-                tickangle=45,
-                tickmode="array",
-                tickvals=tick_vals,
-            ),
+            xaxis=xaxis_cfg,
         )
         st.plotly_chart(volume_fig, width="stretch")
 
@@ -692,9 +690,7 @@ def show_technical(ticker: str, price_data: pd.DataFrame):
     data["MA60"] = data["Close"].rolling(60).mean()
 
     date_strs = data["Date"].dt.strftime("%Y-%m-%d").tolist()
-    n = len(date_strs)
-    step = max(1, n // 20) if n > 120 else (max(1, n // 10) if n > 40 else 1)
-    tick_vals = date_strs[::step]
+    xaxis_cfg = _category_axis(date_strs)
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=date_strs, y=data["Close"], name="Close"))
@@ -708,51 +704,46 @@ def show_technical(ticker: str, price_data: pd.DataFrame):
         xaxis_title="日期",
         yaxis_title="价格",
         height=560,
-        xaxis=dict(type="category", tickangle=45, tickmode="array", tickvals=tick_vals),
+        xaxis=xaxis_cfg,
     )
     st.plotly_chart(fig, width="stretch")
 
-    insights = compute_price_insights(price_data)
-    if insights:
-        section_title("技术面解读")
-        cards = [
-            {
-                "label": "趋势状态",
-                "value": insights["trend_label"],
-                "note": f"MA5 {number_text(insights.get('ma5'))} / MA20 {number_text(insights.get('ma20'))}",
-            },
-            {
-                "label": "价格位置",
-                "value": insights["position_label"],
-                "note": f"距高点 {pct_text(insights['distance_to_high'])}，距低点 {pct_text(insights['distance_to_low'])}",
-            },
-            {
-                "label": "波动风险",
-                "value": insights["risk_label"],
-                "note": f"年化波动率 {pct_text(insights['volatility'])}",
-            },
-            {
-                "label": "量价确认",
-                "value": insights["volume_label"],
-                "note": "放量上涨/放量下跌需要结合最新K线方向继续判断。",
-            },
-        ]
-        render_insight_cards(cards)
-
-        trend_note = "短期均线仍在中期均线上方，动能相对占优。" if insights.get("ma5") and insights.get("ma20") and insights["ma5"] >= insights["ma20"] else "短期均线未明显占优，趋势确认度一般。"
-        st.markdown(
-            f"""
-            <div class="callout">
-                <strong>技术结论：</strong>{trend_note}
-                当前最大回撤 {pct_text(insights["max_drawdown"])}，
-                更适合结合支撑/压力位观察突破或回踩确认。
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    _render_technical_insights(price_data)
 
     section_title("MACD / RSI / 布林带", "补充动量、超买超卖和波动区间指标，辅助验证均线结论。")
     render_advanced_technical_charts(price_data)
+
+
+def _render_technical_insights(price_data: pd.DataFrame):
+    """渲染技术面解读卡片与技术结论文案。"""
+    insights = compute_price_insights(price_data)
+    if not insights:
+        return
+
+    section_title("技术面解读")
+    render_insight_cards([
+        {"label": "趋势状态", "value": insights["trend_label"],
+         "note": f"MA5 {number_text(insights.get('ma5'))} / MA20 {number_text(insights.get('ma20'))}"},
+        {"label": "价格位置", "value": insights["position_label"],
+         "note": f"距高点 {pct_text(insights['distance_to_high'])}，距低点 {pct_text(insights['distance_to_low'])}"},
+        {"label": "波动风险", "value": insights["risk_label"],
+         "note": f"年化波动率 {pct_text(insights['volatility'])}"},
+        {"label": "量价确认", "value": insights["volume_label"],
+         "note": "放量上涨/放量下跌需要结合最新K线方向继续判断。"},
+    ])
+
+    ma_confirmed = insights.get("ma5") and insights.get("ma20") and insights["ma5"] >= insights["ma20"]
+    trend_note = "短期均线仍在中期均线上方，动能相对占优。" if ma_confirmed else "短期均线未明显占优，趋势确认度一般。"
+    st.markdown(
+        f"""
+        <div class="callout">
+            <strong>技术结论：</strong>{trend_note}
+            当前最大回撤 {pct_text(insights["max_drawdown"])}，
+            更适合结合支撑/压力位观察突破或回踩确认。
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def show_comparison(tickers: list[str], period: str):
@@ -771,13 +762,7 @@ def show_comparison(tickers: list[str], period: str):
         if all_date_strs is None or len(date_strs) > len(all_date_strs):
             all_date_strs = date_strs
 
-    if all_date_strs:
-        n = len(all_date_strs)
-        step = max(1, n // 20) if n > 120 else (max(1, n // 10) if n > 40 else 1)
-        tick_vals = all_date_strs[::step]
-        xaxis_cfg = dict(type="category", tickangle=45, tickmode="array", tickvals=tick_vals)
-    else:
-        xaxis_cfg = {}
+    xaxis_cfg = _category_axis(all_date_strs or [])
 
     fig.update_layout(
         **CHART_LAYOUT,
@@ -788,6 +773,61 @@ def show_comparison(tickers: list[str], period: str):
         xaxis=xaxis_cfg,
     )
     st.plotly_chart(fig, width="stretch")
+
+
+FINANCIAL_TABLE_NAMES = {
+    "income_statement": "利润表",
+    "balance_sheet": "资产负债表",
+    "cash_flow": "现金流量表",
+    "financial_ratios": "财务比率",
+    "growth": "成长能力",
+    "operation": "运营能力",
+    "valuation_metrics": "估值指标",
+}
+
+
+def _collect_financial_tables(financial_data: dict) -> list:
+    """从原始财务数据中提取可展示的 (key, DataFrame) 列表。"""
+    available_tables = []
+    for key, value in financial_data.items():
+        if key.startswith("__"):
+            continue
+        if isinstance(value, pd.DataFrame) and not value.empty:
+            available_tables.append((key, value))
+        elif isinstance(value, dict) and value:
+            available_tables.append((key, pd.DataFrame([value])))
+    return available_tables
+
+
+def _render_financial_table_picker(ticker: str, available_tables: list):
+    """渲染财务表选择器、预览与 CSV 下载。"""
+    table_lookup = {key: frame for key, frame in available_tables}
+    table_labels = {
+        key: FINANCIAL_TABLE_NAMES.get(key, key.replace("_", " ").title())
+        for key, _ in available_tables
+    }
+    selected_key = st.selectbox(
+        "选择财务表",
+        options=list(table_lookup.keys()),
+        format_func=lambda key: table_labels.get(key, key),
+        key=f"{ticker}_financial_table_selector",
+    )
+    selected_frame = table_lookup[selected_key]
+
+    rows_count, cols_count = selected_frame.shape
+    table_cols = st.columns(3)
+    table_cols[0].metric("当前表", table_labels[selected_key])
+    table_cols[1].metric("行数", str(rows_count))
+    table_cols[2].metric("字段数", str(cols_count))
+
+    st.dataframe(selected_frame, width="stretch", hide_index=True)
+    st.download_button(
+        label=f"下载 {table_labels[selected_key]} CSV",
+        data=selected_frame.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"{ticker}_{selected_key}.csv",
+        mime="text/csv",
+        key=f"{ticker}_{selected_key}_financial_download",
+    )
 
 
 def show_financial_export(ticker: str):
@@ -805,72 +845,21 @@ def show_financial_export(ticker: str):
         section_title("财务数据", "按数据源返回的报表、比率与估值字段分组展示。")
         render_financial_visuals(financial_data)
 
-        table_names = {
-            "income_statement": "利润表",
-            "balance_sheet": "资产负债表",
-            "cash_flow": "现金流量表",
-            "financial_ratios": "财务比率",
-            "growth": "成长能力",
-            "operation": "运营能力",
-            "valuation_metrics": "估值指标",
-        }
-        available_tables = []
-        for key, value in financial_data.items():
-            if key.startswith("__"):
-                continue
-            if isinstance(value, pd.DataFrame) and not value.empty:
-                available_tables.append((key, value))
-            elif isinstance(value, dict) and value:
-                available_tables.append((key, pd.DataFrame([value])))
-
+        available_tables = _collect_financial_tables(financial_data)
         if not available_tables:
             st.info("当前配置的数据源暂未返回可展示的财务表。")
             return
 
         section_title("财务数据覆盖")
-        coverage_cards = [
-            {
-                "label": "可用数据表",
-                "value": str(len(available_tables)),
-                "note": "当前数据源可展示的财务数据分组数量。",
-            },
-            {
-                "label": "导出状态",
-                "value": "可导出",
-                "note": "每个分组均支持 CSV 下载。",
-            },
-            {
-                "label": "数据用途",
-                "value": "估值/盈利/成长",
-                "note": "适合与行情走势、AI Agent 结论交叉验证。",
-            },
-        ]
-        render_insight_cards(coverage_cards)
+        render_insight_cards([
+            {"label": "可用数据表", "value": str(len(available_tables)),
+             "note": "当前数据源可展示的财务数据分组数量。"},
+            {"label": "导出状态", "value": "可导出", "note": "每个分组均支持 CSV 下载。"},
+            {"label": "数据用途", "value": "估值/盈利/成长",
+             "note": "适合与行情走势、AI Agent 结论交叉验证。"},
+        ])
 
-        table_lookup = {key: frame for key, frame in available_tables}
-        table_labels = {key: table_names.get(key, key.replace("_", " ").title()) for key, _ in available_tables}
-        selected_key = st.selectbox(
-            "选择财务表",
-            options=list(table_lookup.keys()),
-            format_func=lambda key: table_labels.get(key, key),
-            key=f"{ticker}_financial_table_selector",
-        )
-        selected_frame = table_lookup[selected_key]
-
-        rows_count, cols_count = selected_frame.shape
-        table_cols = st.columns(3)
-        table_cols[0].metric("当前表", table_labels[selected_key])
-        table_cols[1].metric("行数", str(rows_count))
-        table_cols[2].metric("字段数", str(cols_count))
-
-        st.dataframe(selected_frame, width="stretch", hide_index=True)
-        st.download_button(
-            label=f"下载 {table_labels[selected_key]} CSV",
-            data=selected_frame.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"{ticker}_{selected_key}.csv",
-            mime="text/csv",
-            key=f"{ticker}_{selected_key}_financial_download",
-        )
+        _render_financial_table_picker(ticker, available_tables)
     except Exception as exc:
         st.warning(f"无法加载财务数据: {exc}")
 
@@ -962,7 +951,7 @@ def render_agent_status(status: dict):
         rows.append(
             {
             "智能体": normalize_agent_name(agent_name),
-            "状态": "成功" if success else "失败",
+            "状态": "✅ 成功" if success else "❌ 失败",
             "置信度": f"{item.get('confidence_score', 0):.0%}" if item.get('confidence_score') is not None else "N/A",
             "问题": item.get("error") or ("" if success else "分析未完成"),
             }
@@ -1107,6 +1096,11 @@ def show_agent_analysis(ticker: str, period: str):
             st.error(f"智能体工作流启动失败: {exc}")
             return
 
+    _render_analysis_results(ticker, result)
+
+
+def _render_analysis_results(ticker: str, result: dict):
+    """渲染一次智能体工作流的完整结果（状态、建议、诊断、明细、追问）。"""
     elapsed = result.get("elapsed_time_seconds")
     if not result.get("success"):
         st.error(result.get("error") or "智能体工作流执行失败。")
@@ -1125,29 +1119,31 @@ def show_agent_analysis(ticker: str, period: str):
 
     status = result.get("agent_execution_status") or {}
     render_agent_status(status)
-
     render_workflow_diagnostics(result.get("conflict_analysis") or {}, result.get("workflow_metadata") or {})
-
-    details = result.get("detailed_results") or {}
-    render_agent_details(details, status)
+    render_agent_details(result.get("detailed_results") or {}, status)
 
     if result:
         section_title("报告导出")
         render_report_downloads(result, ticker)
-        section_title("对话式追问", "基于本次 AI 分析结果继续提问。")
-        question = st.text_input("追问内容", placeholder="例如：为什么建议持有？最大的风险是什么？")
-        if st.button("提交追问", disabled=not question.strip()):
-            with st.spinner("正在基于本次分析回答..."):
-                try:
-                    answer = answer_followup_question(result, question)
-                    st.session_state.setdefault("analysis_followups", []).append(
-                        {"question": question, "answer": answer}
-                    )
-                except Exception as exc:
-                    st.error(f"追问失败: {exc}")
-        for item in reversed(st.session_state.get("analysis_followups", [])[-5:]):
-            with st.expander(item["question"], expanded=False):
-                st.write(item["answer"])
+        _render_followup_qa(result)
+
+
+def _render_followup_qa(result: dict):
+    """基于本次分析结果的对话式追问区块。"""
+    section_title("对话式追问", "基于本次 AI 分析结果继续提问。")
+    question = st.text_input("追问内容", placeholder="例如：为什么建议持有？最大的风险是什么？")
+    if st.button("提交追问", disabled=not question.strip()):
+        with st.spinner("正在基于本次分析回答..."):
+            try:
+                answer = answer_followup_question(result, question)
+                st.session_state.setdefault("analysis_followups", []).append(
+                    {"question": question, "answer": answer}
+                )
+            except Exception as exc:
+                st.error(f"追问失败: {exc}")
+    for item in reversed(st.session_state.get("analysis_followups", [])[-5:]):
+        with st.expander(item["question"], expanded=False):
+            st.write(item["answer"])
 
 
 setup_page()
