@@ -588,6 +588,7 @@ def render_workspace_right_rail(
         ("市场", infer_market_code(ticker, stock_info)),
         ("视图", view_label),
         ("数据源", source_hint),
+        ("Fallback", "Alltick → BaoStock → JQData"),
         ("更新时间", latest_time),
         ("新闻数", len(news_data or [])),
         ("Agent", f"{agent_summary['success']}/{agent_summary['total']} 成功"),
@@ -1675,11 +1676,22 @@ def show_agent_analysis(ticker: str, period: str):
         st.info("点击按钮后会启动完整 LangGraph 工作流。")
         return
 
-    with st.spinner("正在运行智能体工作流..."):
+    progress = st.progress(0, text="准备 LangGraph 工作流...")
+    with st.status("运行 AI 分析", expanded=True) as status_box:
+        st.write("路由节点：根据选择的维度确定专业 Agent。")
+        progress.progress(15, text="初始化 Agent 协调器...")
         try:
             coordinator = get_coordinator(use_memory, enabled_agents)
+            st.write("专业 Agent：并行执行技术面、基本面、情绪、资金流等分析。")
+            progress.progress(35, text="专业 Agent 并行分析中...")
             result = coordinator.analyze(ticker, time_range=period)
+            st.write("质量门与冲突分析：检查失败、低置信、数据缺口和评分分歧。")
+            progress.progress(80, text="首席策略 Agent 汇总中...")
+            status_box.update(label="AI 分析完成", state="complete", expanded=False)
+            progress.progress(100, text="分析完成")
         except Exception as exc:
+            status_box.update(label="AI 分析失败", state="error", expanded=True)
+            progress.progress(100, text="分析失败")
             st.error(f"智能体工作流启动失败: {exc}")
             return
 

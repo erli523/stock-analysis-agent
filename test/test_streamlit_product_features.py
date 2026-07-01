@@ -170,6 +170,8 @@ class ProductFeatureHelperTests(unittest.TestCase):
         self.assertIn("st.session_state[\"last_analysis_result\"] = result", src)
         self.assertIn("界面主题", src)
         self.assertIn("深色终端", src)
+        self.assertIn("Fallback", src)
+        self.assertIn("st.status(\"运行 AI 分析\"", src)
 
 
 if __name__ == "__main__":
