@@ -1663,13 +1663,9 @@ def show_agent_analysis(ticker: str, period: str):
     )
 
     use_memory = st.checkbox("使用智能体记忆", value=False)
-    selected_labels = st.multiselect(
-        "选择分析维度",
-        options=list(AGENT_LABELS.values()),
-        default=list(AGENT_LABELS.values()),
-        help="只运行选中的专业 Agent，可减少等待时间和 LLM token 消耗。",
-    )
+    selected_labels = st.session_state.get("sidebar_agent_labels") or list(AGENT_LABELS.values())
     enabled_agents = tuple(normalize_agent_selection(selected_labels) or list(AGENT_LABELS.keys()))
+    st.caption("当前分析维度：" + "、".join(selected_labels))
     section_title("LangGraph 工作流")
     render_agent_workflow_strip(selected_agents=list(enabled_agents))
     if not st.button("运行智能分析", type="primary"):
@@ -1767,6 +1763,7 @@ with st.sidebar:
         quick_symbol = st.selectbox("自选股快捷切换", [""] + favorites, format_func=lambda item: item or "不使用自选")
     default_ticker = quick_symbol or "300502"
     ticker = st.text_input("股票代码", value=default_ticker).strip().upper()
+    st.caption(f"市场识别：{infer_market_code(ticker, {})}")
     fav_cols = st.columns(2)
     if fav_cols[0].button("加入自选", disabled=not ticker):
         add_favorite(ticker)
@@ -1784,6 +1781,16 @@ with st.sidebar:
         end_date = date_cols[1].date_input("结束日期", value=date.today())
         period_display = f"{start_date} 至 {end_date}"
         period = "max"
+
+    st.markdown("---")
+    st.markdown("## Agent 维度")
+    sidebar_agent_labels = st.multiselect(
+        "参与分析",
+        options=list(AGENT_LABELS.values()),
+        default=list(AGENT_LABELS.values()),
+        help="控制智能体分析页运行哪些专业 Agent。",
+        key="sidebar_agent_labels",
+    )
 
     st.markdown("---")
     st.markdown("## 对比")
