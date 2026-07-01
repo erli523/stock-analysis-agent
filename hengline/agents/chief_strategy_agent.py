@@ -80,7 +80,7 @@ class ChiefStrategyAgent(BaseAgent):
             "ESGRiskAgent": 0.10           # ESG与治理风险分析权重
         }
     
-    def analyze(self, stock_code: str, agent_results: Dict[str, AgentResult], **kwargs) -> AgentResult:
+    def analyze(self, stock_code: str, agent_results: Dict[str, AgentResult], conflict_analysis: Dict = None, **kwargs) -> AgentResult:
         """
         整合各智能体分析结果，生成最终投资建议
         
@@ -110,10 +110,11 @@ class ChiefStrategyAgent(BaseAgent):
             # 检索相关知识库信息
             knowledge = self._retrieve_knowledge(f"投资决策 组合管理 风险评估 市场时机")
             
-            # 生成分析提示词
+            # 生成分析提示词（包含冲突分析）
             prompt = self._generate_analysis_prompt(
-                stock_code, filtered_results, composite_score, 
-                overall_risk, key_strengths, key_risks
+                stock_code, filtered_results, composite_score,
+                overall_risk, key_strengths, key_risks,
+                conflict_analysis=conflict_analysis
             )
             
             # 使用LLM生成综合分析
@@ -410,7 +411,8 @@ class ChiefStrategyAgent(BaseAgent):
     
     def _generate_analysis_prompt(self, stock_code: str, filtered_results: Dict[str, Dict[str, Any]],
                                  composite_score: float, overall_risk: Dict[str, Any],
-                                 key_strengths: List[str], key_risks: List[str]) -> str:
+                                 key_strengths: List[str], key_risks: List[str],
+                                 conflict_analysis: Dict = None) -> str:
         """
         生成综合分析提示词
         
@@ -447,6 +449,23 @@ class ChiefStrategyAgent(BaseAgent):
         prompt_template = ChatPromptTemplate.from_template(template)
         
         # 格式化并返回提示内容
+        # 构建冲突分析文本，供首席参考
+        conflict_text = ""
+        if conflict_analysis:
+            summary = conflict_analysis.get("conflict_summary", "")
+            divergences = conflict_analysis.get("score_divergences", [])
+            data_gaps = conflict_analysis.get("data_gaps", [])
+            failed = conflict_analysis.get("failed_agents", [])
+            parts = [f"[多维度冲突分析]\n{summary}"]
+            if divergences:
+                parts.append("评分分歧详情：" + "；".join(divergences))
+            if data_gaps:
+                parts.append("数据缺口：" + "；".join(data_gaps[:3]))
+            if failed:
+                failed_str = "、".join(failed)
+                parts.append(f"执行失败的维度：{failed_str}（请在建议中注明缺失维度）")
+            conflict_text = "\n".join(parts)
+
         prompt = prompt_template.format(
             stock_code=stock_code,
             composite_score=f"{composite_score:.2f}",
@@ -456,7 +475,11 @@ class ChiefStrategyAgent(BaseAgent):
             key_risks=json.dumps(key_risks, indent=2, ensure_ascii=False),
             filtered_results=json.dumps(filtered_results, indent=2, ensure_ascii=False)
         )
-        
+
+        # 将冲突分析追加到提示词末尾
+        if conflict_text:
+            prompt += f"\n\n{conflict_text}\n\n请在最终建议中明确说明各维度的分歧和不确定性。"
+
         return prompt
     
     def _structure_result(self, stock_code: str, llm_analysis: Dict[str, Any],

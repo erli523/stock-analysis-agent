@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import functools
 import os
 from datetime import datetime
 from typing import Dict, Any, Optional, TypedDict, Annotated, Callable
@@ -40,17 +41,33 @@ def merge_dicts(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any]:
     merged.update(right)
     return merged
 
+# Reflection Loop 最大重试次数（每个 Agent 最多额外重试 N 次）
+REFLECTION_MAX_RETRIES = 2
+
+# 各 Agent 差异化超时（秒）
+AGENT_TIMEOUTS: Dict[str, int] = {
+    "FundamentalAgent":   int(os.getenv("FUNDAMENTAL_TIMEOUT",   "120")),
+    "TechnicalAgent":     int(os.getenv("TECHNICAL_TIMEOUT",      "90")),
+    "IndustryMacroAgent": int(os.getenv("INDUSTRY_TIMEOUT",       "90")),
+    "SentimentAgent":     int(os.getenv("SENTIMENT_TIMEOUT",      "60")),
+    "FundFlowAgent":      int(os.getenv("FUNDFLOW_TIMEOUT",       "60")),
+    "ESGRiskAgent":       int(os.getenv("ESG_TIMEOUT",            "45")),
+    "ChiefStrategyAgent": int(os.getenv("CHIEF_TIMEOUT",         "120")),
+}
+
+
 class AgentState(TypedDict):
     """
-    定义LangGraph的状态类型
-    使用自定义合并函数处理并行更新
+    LangGraph 工作流状态。
+    支持 Reflection Loop（重试追踪）和 ConflictAnalyzer（冲突分析）。
     """
     stock_code: str
     time_range: str
     agent_params: Dict[str, Any]
     chief_params: Dict[str, Any]
     agent_results: Annotated[Dict[str, Any], merge_dicts]
-    final_result: Optional[Dict[str, Any]] = None
+    conflict_analysis: Optional[Dict[str, Any]]   # ConflictAnalyzer 写入，Chief 读取
+    final_result: Optional[Dict[str, Any]]
 
 
 class AgentCoordinator:
@@ -194,175 +211,270 @@ class AgentCoordinator:
 
     def build_workflow(self):
         """
-        构建智能体工作流程
+        构建智能体工作流程。
+        图结构：[6个Agent带Reflection循环] → conflict_analyzer → Chief → END
         """
         try:
-            debug("开始构建智能体工作流")
+            debug("开始构建智能体工作流（含 Reflection Loop）")
 
-            # 创建LangGraph工作流，指定状态类型
             self.graph = StateGraph(AgentState)
 
-            # 添加节点：并行执行各专业智能体
-            for agent_name, agent in self.agents.items():
-                if agent_name != "ChiefStrategyAgent":  # 策略官单独处理
-                    self.graph.add_node(agent_name, self._create_agent_node(agent_name))
+            # 注册各专业 Agent 节点（含内部 Reflection Loop）
+            specialist_names = [n for n in self.agents if n != "ChiefStrategyAgent"]
+            for agent_name in specialist_names:
+                self.graph.add_node(agent_name, self._create_agent_node(agent_name))
 
-            # 添加首席策略官节点
+            # 注册冲突检测节点
+            self.graph.add_node("conflict_analyzer", self._create_conflict_analyzer_node())
+
+            # 注册首席策略官节点
             self.graph.add_node("ChiefStrategyAgent", self._create_chief_node())
 
-            # 设置初始节点（所有专业智能体并行执行）
-            entry_points = [name for name in self.agents.keys() if name != "ChiefStrategyAgent"]
-            for entry_point in entry_points:
-                self.graph.add_edge("__start__", entry_point)
+            # 所有专业 Agent 从 START 并行出发
+            for name in specialist_names:
+                self.graph.add_edge("__start__", name)
 
-            # 设置边：所有专业智能体完成后执行首席策略官
-            for agent_name in entry_points:
-                self.graph.add_edge(agent_name, "ChiefStrategyAgent")
+            # 所有专业 Agent 完成后汇入 conflict_analyzer
+            for name in specialist_names:
+                self.graph.add_edge(name, "conflict_analyzer")
 
-            # 设置结束节点
+            # conflict_analyzer → Chief → END
+            self.graph.add_edge("conflict_analyzer", "ChiefStrategyAgent")
             self.graph.add_edge("ChiefStrategyAgent", END)
 
-            # 编译图
             self.graph = self.graph.compile()
-
-            debug("智能体工作流构建完成")
+            debug("工作流构建完成（Reflection Loop + ConflictAnalyzer）")
 
         except Exception as e:
             error(f"构建工作流失败: {str(e)}")
             raise
 
+    # ── 冲突检测：纯 Python 逻辑，无需 LLM ─────────────────────────────
+    @staticmethod
+    def _compute_agent_score(agent_name: str, result_dict: dict) -> Optional[float]:
+        """从 agent 结果 dict 提取 0-100 评分。"""
+        if not result_dict or not result_dict.get("success", False):
+            return None
+        d = result_dict.get("result", {})
+        if agent_name == "FundamentalAgent":
+            raw = d.get("overall_score", 0)
+            return float(raw) * 10 if raw and raw <= 10 else (float(raw) if raw else None)
+        if agent_name == "TechnicalAgent":
+            sig = d.get("signal_strength", "neutral")
+            mapping = {"strong_bullish": 85, "bullish": 70, "weak_bullish": 60,
+                       "neutral": 50, "weak_bearish": 40, "bearish": 30, "strong_bearish": 15}
+            base = mapping.get(sig, 50)
+            conf = d.get("confidence_score", 0.5)
+            return base * 0.7 + conf * 100 * 0.3
+        if agent_name == "IndustryMacroAgent":
+            i_score = d.get("industry_analysis", {}).get("industry_score", 50)
+            m_score = d.get("macro_analysis", {}).get("economic_score", 50)
+            return (float(i_score) + float(m_score)) / 2
+        if agent_name == "SentimentAgent":
+            sm = d.get("sentiment_metrics", {})
+            ns = sm.get("news_sentiment", {})
+            pos, neg = ns.get("positive", 0), ns.get("negative", 0)
+            return (pos / (pos + neg) * 100) if (pos + neg) > 0 else 50.0
+        if agent_name == "FundFlowAgent":
+            fc = d.get("key_metrics", {}).get("flow_classification", "neutral")
+            return {"strong_inflow": 90, "moderate_inflow": 75, "weak_inflow": 60,
+                    "neutral": 50, "weak_outflow": 40, "moderate_outflow": 25,
+                    "strong_outflow": 10}.get(fc, 50.0)
+        if agent_name == "ESGRiskAgent":
+            return float(d.get("esg_metrics", {}).get("overall_score", 50) or 50)
+        return 50.0
+
+    def _create_conflict_analyzer_node(self):
+        """
+        冲突检测节点：分析各 Agent 结果之间的评分分歧、数据缺口和方向矛盾。
+        纯 Python 逻辑，不调用 LLM，执行极快。
+        """
+        def conflict_analyzer_node(state: AgentState) -> Dict[str, Any]:
+            agent_results = state.get("agent_results", {})
+
+            scores: Dict[str, float] = {}
+            failed_agents: List[str] = []
+            data_gaps: List[str] = []
+            score_divergences: List[str] = []
+
+            for name, result_obj in agent_results.items():
+                if name == "ChiefStrategyAgent":
+                    continue
+                result_dict = {
+                    "success": result_obj.success,
+                    "result": result_obj.result,
+                }
+                if not result_obj.success:
+                    failed_agents.append(name)
+                    continue
+                score = self._compute_agent_score(name, result_dict)
+                if score is not None:
+                    scores[name] = score
+                r = result_obj.result or {}
+                if not r.get("key_findings"):
+                    data_gaps.append(f"{name}: key_findings 为空")
+                if r.get("data_available") is False:
+                    note = r.get("data_note", "数据不可用")
+                    data_gaps.append(f"{name}: {str(note)[:60]}")
+
+            names_list = list(scores.keys())
+            for i in range(len(names_list)):
+                for j in range(i + 1, len(names_list)):
+                    a, b = names_list[i], names_list[j]
+                    diff = abs(scores[a] - scores[b])
+                    if diff > 30:
+                        score_divergences.append(
+                            f"{a}({scores[a]:.0f}分) vs {b}({scores[b]:.0f}分)：差距 {diff:.0f} 分"
+                        )
+
+            if scores:
+                avg = sum(scores.values()) / len(scores)
+                bullish_count = sum(1 for s in scores.values() if s >= 60)
+                bearish_count = sum(1 for s in scores.values() if s <= 40)
+                if bullish_count >= len(scores) * 0.6:
+                    consensus = "偏多"
+                elif bearish_count >= len(scores) * 0.6:
+                    consensus = "偏空"
+                elif score_divergences:
+                    consensus = "分歧"
+                else:
+                    consensus = "中性"
+            else:
+                avg = 50.0
+                consensus = "数据不足"
+
+            has_conflicts = bool(score_divergences or len(failed_agents) >= 2)
+
+            conflict_result = {
+                "has_conflicts": has_conflicts,
+                "consensus_direction": consensus,
+                "average_score": round(avg, 1),
+                "agent_scores": {k: round(v, 1) for k, v in scores.items()},
+                "score_divergences": score_divergences,
+                "failed_agents": failed_agents,
+                "data_gaps": data_gaps,
+                "conflict_summary": (
+                    f"共识方向：{consensus}（均分 {avg:.0f}）。"
+                    + (f" 存在 {len(score_divergences)} 处显著评分分歧。" if score_divergences else " 各维度无显著分歧。")
+                    + (f" {len(failed_agents)} 个 Agent 执行失败。" if failed_agents else "")
+                    + (f" {len(data_gaps)} 处数据缺口。" if data_gaps else "")
+                )
+            }
+
+            conflict_summary_msg = conflict_result["conflict_summary"]
+            info(f"冲突分析完成：{conflict_summary_msg}")
+            return {"conflict_analysis": conflict_result}
+
+        return conflict_analyzer_node
+
     def _create_agent_node(self, agent_name: str):
         """
-        创建智能体节点函数
-        
-        Args:
-            agent_name: 智能体名称
-            
-        Returns:
-            function: 节点函数
+        创建带 Reflection Loop 的智能体节点。
+        - 每次执行后验证输出结构
+        - 验证失败时将错误注入 Agent._reflection_hint，最多重试 REFLECTION_MAX_RETRIES 次
         """
+        agent_timeout = AGENT_TIMEOUTS.get(agent_name, 60)
 
         async def agent_node(state: AgentState) -> Dict[str, Any]:
-            """
-            智能体节点执行函数
-            
-            Args:
-                state: 当前状态
-                
-            Returns:
-                Dict[str, Any]: 需要更新的状态部分
-            """
-            stock_code = state.get("stock_code", "")
-            time_range = state.get("time_range", "1y")
+            stock_code   = state.get("stock_code", "")
+            time_range   = state.get("time_range", "1y")
             agent_params = state.get("agent_params", {})
+            agent        = self.agents[agent_name]
 
-            @performance_logger(f"执行 {agent_name} 分析")
-            async def run_agent():
+            last_result = None
+
+            for attempt in range(REFLECTION_MAX_RETRIES + 1):
+                if attempt > 0:
+                    debug(f"{agent_name} Reflection 重试第 {attempt} 次")
+
                 try:
-                    agent = self.agents[agent_name]
-                    # 同步智能体转换为异步执行
+                    call = functools.partial(agent.analyze, stock_code, time_range, **agent_params)
                     loop = asyncio.get_event_loop()
-                    result = await loop.run_in_executor(
-                        None,
-                        agent.analyze,
-                        stock_code,
-                        time_range,
-                        **agent_params
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(None, call),
+                        timeout=agent_timeout
                     )
-                    return result
-                except Exception as e:
-                    error(f"{agent_name} 执行失败: {str(e)}")
-                    return AgentResult(
-                        agent_name=agent_name,
-                        success=False,
-                        result={},
-                        error_message=str(e),
-                        confidence_score=0.0
+                except asyncio.TimeoutError:
+                    error(f"{agent_name} 超时（{agent_timeout}s），attempt={attempt}")
+                    result = AgentResult(
+                        agent_name=agent_name, success=False, result={},
+                        error_message=f"超时（{agent_timeout}s）", confidence_score=0.0
+                    )
+                except Exception as exc:
+                    error(f"{agent_name} 执行异常 attempt={attempt}: {exc}")
+                    result = AgentResult(
+                        agent_name=agent_name, success=False, result={},
+                        error_message=str(exc), confidence_score=0.0
                     )
 
-            # 执行智能体
-            timeout = self._get_timeout("AGENT_RESPONSE_TIMEOUT", 60)
-            try:
-                result = await asyncio.wait_for(run_agent(), timeout=timeout)
-            except asyncio.TimeoutError:
-                error(f"{agent_name} execution timed out after {timeout}s")
-                result = AgentResult(
-                    agent_name=agent_name,
-                    success=False,
-                    result={},
-                    error_message=f"Timed out after {timeout}s",
-                    confidence_score=0.0
-                )
+                last_result = result
+                validation_error = agent._validate_output(result)
 
-            # 返回需要更新的状态部分
-            debug(f"{agent_name} 分析完成，状态: {'成功' if result.success else '失败'}")
-            # 使用add_messages合并策略，只返回当前智能体的结果
-            return {"agent_results": {agent_name: result}}
+                if validation_error is None:
+                    if attempt > 0:
+                        info(f"{agent_name} 经过 {attempt} 次 Reflection 后输出有效")
+                    agent.clear_reflection_hint()
+                    break
+
+                warning(f"{agent_name} attempt={attempt} 验证失败: {validation_error}")
+                if attempt < REFLECTION_MAX_RETRIES:
+                    agent.set_reflection_hint(validation_error)
+                else:
+                    warning(f"{agent_name} 已达最大重试次数，使用最后一次结果")
+                    agent.clear_reflection_hint()
+
+            status_str = "成功" if last_result.success else "失败"
+            debug(f"{agent_name} 节点完成，状态: {status_str}")
+            return {"agent_results": {agent_name: last_result}}
 
         return agent_node
 
+
     def _create_chief_node(self):
         """
-        创建首席策略官节点函数
-        
-        Returns:
-            function: 节点函数
+        创建首席策略官节点。
+        从 State 中读取 conflict_analysis 并传给 Chief。
         """
-
         async def chief_node(state: AgentState) -> Dict[str, Any]:
-            """
-            首席策略官节点执行函数
-            
-            Args:
-                state: 当前状态
-                
-            Returns:
-                Dict[str, Any]: 需要更新的状态部分
-            """
-            stock_code = state.get("stock_code", "")
-            agent_results = state.get("agent_results", {})
+            stock_code        = state.get('stock_code', '')
+            agent_results     = state.get('agent_results', {})
+            conflict_analysis = state.get('conflict_analysis', {})
+            chief_timeout     = AGENT_TIMEOUTS.get('ChiefStrategyAgent', 120)
 
-            @performance_logger("执行首席策略官分析")
             async def run_chief():
                 try:
-                    chief_agent = self.agents["ChiefStrategyAgent"]
+                    chief_agent = self.agents['ChiefStrategyAgent']
                     loop = asyncio.get_event_loop()
-                    result = await loop.run_in_executor(
-                        None,
+                    call = functools.partial(
                         chief_agent.analyze,
                         stock_code,
-                        agent_results
+                        agent_results,
+                        conflict_analysis=conflict_analysis
                     )
-                    return result
+                    return await loop.run_in_executor(None, call)
                 except Exception as e:
-                    error(f"首席策略官执行失败: {str(e)}")
+                    error(f'首席策略官执行失败: {str(e)}')
                     return AgentResult(
-                        agent_name="ChiefStrategyAgent",
-                        success=False,
-                        result={},
-                        error_message=str(e),
-                        confidence_score=0.0
+                        agent_name='ChiefStrategyAgent',
+                        success=False, result={},
+                        error_message=str(e), confidence_score=0.0
                     )
 
-            # 执行首席策略官
-            timeout = self._get_timeout("AGENT_RESPONSE_TIMEOUT", 60)
             try:
-                result = await asyncio.wait_for(run_chief(), timeout=timeout)
+                result = await asyncio.wait_for(run_chief(), timeout=chief_timeout)
             except asyncio.TimeoutError:
-                error(f"ChiefStrategyAgent execution timed out after {timeout}s")
+                error(f'ChiefStrategyAgent 超时（{chief_timeout}s）')
                 result = AgentResult(
-                    agent_name="ChiefStrategyAgent",
-                    success=False,
-                    result={},
-                    error_message=f"Timed out after {timeout}s",
-                    confidence_score=0.0
+                    agent_name='ChiefStrategyAgent',
+                    success=False, result={},
+                    error_message=f'超时（{chief_timeout}s）', confidence_score=0.0
                 )
 
-            # 返回需要更新的状态部分
-            debug(f"首席策略官分析完成，最终建议: {result.result.get('investment_recommendation', '无') if result.success else '失败'}")
-            return {"final_result": result}
+            debug('首席策略官分析完成')
+            return {'final_result': result}
 
         return chief_node
+
 
     async def analyze_async(self, stock_code: str, time_range: str = "1y", **kwargs) -> Dict[str, Any]:
         """

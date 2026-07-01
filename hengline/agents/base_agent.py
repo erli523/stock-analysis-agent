@@ -128,6 +128,9 @@ class BaseAgent(ABC):
         # stock_manager 占位符，供子类或协调器注入共享实例
         self.stock_manager = None
 
+        # Reflection Loop 支持：记录上一次的验证错误，注入到下一次 LLM 调用中
+        self._reflection_hint: Optional[str] = None
+
         debug(f"初始化智能体: {self.agent_name}")
         if config.enable_memory:
             debug(f"智能体记忆功能已启用")
@@ -137,6 +140,57 @@ class BaseAgent(ABC):
         self.stock_manager = stock_manager
         name = getattr(self, "agent_name", type(self).__name__)
         debug(f"{name} 已接受注入的共享 StockDataManager")
+
+    # ── Reflection Loop 支持 ────────────────────────────────────────────
+    def set_reflection_hint(self, error_msg: str) -> None:
+        """设置 Reflection 提示：将上次验证错误记录下来，下次 LLM 调用时注入。"""
+        self._reflection_hint = error_msg
+        debug(f"{getattr(self, 'agent_name', type(self).__name__)} 收到 Reflection 提示: {error_msg[:80]}")
+
+    def clear_reflection_hint(self) -> None:
+        """清除 Reflection 提示（成功或重试耗尽后调用）。"""
+        self._reflection_hint = None
+
+    def _reflection_hint_text(self) -> str:
+        """返回格式化的 Reflection 提示文本，供注入 LLM Prompt。"""
+        if not self._reflection_hint:
+            return ""
+        return (
+            f"\n\n[Reflection 重试]\n"
+            f"上一次输出未通过结构验证，错误原因：{self._reflection_hint}\n"
+            f"请确保本次输出：\n"
+            f"1. 是完整有效的 JSON 格式（以 {{ 开头，以 }} 结尾）\n"
+            f"2. 包含必填字段：key_findings（列表）、confidence_score（0.1-1.0 浮点数）\n"
+            f"3. confidence_score 不为 0，不为 null\n"
+        )
+
+    def _validate_output(self, result: 'AgentResult') -> Optional[str]:
+        """
+        验证 Agent 输出的结构完整性。
+        
+        Returns:
+            None  — 输出有效
+            str   — 错误描述（将作为 Reflection 提示）
+        """
+        if not result.success:
+            return result.error_message or "Agent 返回了失败状态"
+        d = result.result
+        if not d:
+            return "result 字段为空 dict"
+        # 置信度过低通常意味着 JSON 解析失败（回退到 0.5 默认值）
+        score = d.get("confidence_score", 1.0)
+        if score is not None and float(score) <= 0.1:
+            return f"confidence_score={score} 极低（≤0.1），疑似 LLM 未能输出有效 JSON"
+        # key_findings 必须是非空列表
+        findings = d.get("key_findings", None)
+        if findings is None:
+            return "缺少必填字段 key_findings"
+        if isinstance(findings, list) and len(findings) == 1:
+            # 如果 key_findings 只有一条且是很长的原始文本，说明 LLM 输出未解析
+            raw = str(findings[0])
+            if len(raw) > 300 and "{" not in raw and "，" not in raw[:50]:
+                return f"key_findings 疑似包含未解析的原始 LLM 输出（长度 {len(raw)}）"
+        return None  # 通过验证
 
     @abstractmethod
     def analyze(self, stock_code: str, time_range: str = "1y", **kwargs) -> AgentResult:
@@ -377,15 +431,16 @@ class BaseAgent(ABC):
         try:
             # 构建完整提示词
             knowledge_text = chr(10).join(knowledge) if knowledge else "无"
+            # Reflection 提示（重试时非空，首次调用为空字符串）
+            reflection_text = self._reflection_hint_text()
 
             # 如果启用了记忆，使用记忆增强的LLM调用
             if self.memory:
                 try:
-                    # 使用langchain的ChatPromptTemplate创建带记忆的提示模板
                     template = """
                     你是{description}。请基于提供的信息和历史对话进行专业、客观的分析。
-                    只能使用当前任务和相关知识中明确提供的数据；如果某类数据缺失，请说明“当前数据源不可用/未提供”，不要编造机构持仓、高管交易、ESG评级或新闻事件。
-                    
+                    只能使用当前任务和相关知识中明确提供的数据；如果某类数据缺失，请说明"当前数据源不可用/未提供"，不要编造机构持仓、高管交易、ESG评级或新闻事件。
+                    {reflection_section}
                     相关知识：
                     {knowledge_text}
                     
@@ -400,32 +455,29 @@ class BaseAgent(ABC):
 
                     prompt_template = ChatPromptTemplate.from_template(template)
 
-                    # 创建链
                     chain = RunnablePassthrough.assign(
                         chat_history=self.memory.load_memory_variables,
                         description=lambda _: self.description,
-                        knowledge_text=lambda _: knowledge_text
+                        knowledge_text=lambda _: knowledge_text,
+                        reflection_section=lambda _: reflection_text
                     ) | prompt_template | self.langchain_llm | StrOutputParser()
 
-                    # 执行链
                     response_text = chain.invoke({"input": prompt})
 
-                    # 保存到记忆
                     self.memory.save_context(
                         {"input": prompt},
                         {"output": response_text}
                     )
 
-                    # 解析JSON响应
                     return self._parse_llm_json(response_text)
                 except Exception as mem_e:
                     warning(f"使用记忆系统失败，回退到普通调用: {str(mem_e)}")
 
-            # 普通调用方式（备用）- 统一使用langchain框架
+            # 普通调用方式（备用）
             template = """
             你是{description}。请基于提供的信息进行专业、客观的分析。
-            只能使用当前任务和相关知识中明确提供的数据；如果某类数据缺失，请说明“当前数据源不可用/未提供”，不要编造机构持仓、高管交易、ESG评级或新闻事件。
-            
+            只能使用当前任务和相关知识中明确提供的数据；如果某类数据缺失，请说明"当前数据源不可用/未提供"，不要编造机构持仓、高管交易、ESG评级或新闻事件。
+            {reflection_section}
             相关知识：
             {knowledge_text}
             
@@ -435,16 +487,14 @@ class BaseAgent(ABC):
             请输出JSON格式的分析结果。
             """
 
-            # 使用langchain的ChatPromptTemplate
             prompt_template = ChatPromptTemplate.from_template(template)
 
-            # 创建链
             chain = RunnablePassthrough.assign(
                 description=lambda _: self.description,
-                knowledge_text=lambda _: knowledge_text
+                knowledge_text=lambda _: knowledge_text,
+                reflection_section=lambda _: reflection_text
             ) | prompt_template | self.langchain_llm | StrOutputParser()
 
-            # 执行链
             response_text = chain.invoke({"input": prompt})
 
             # 解析JSON响应
@@ -453,7 +503,6 @@ class BaseAgent(ABC):
         except Exception as e:
             error(f"LLM分析生成失败: {str(e)}")
             raise
-
     def _parse_llm_json(self, response_text: Any) -> Dict[str, Any]:
         if isinstance(response_text, dict):
             return response_text

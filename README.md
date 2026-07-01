@@ -11,7 +11,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Based On](https://img.shields.io/badge/Based%20On-neopen%2Fstock--analysis--agent-lightgrey?logo=github)](https://github.com/neopen/stock-analysis-agent)
 
-> 🤖 七个专业 AI Agent 并行协作，结合 RAG 知识库，对 A 股进行技术、基本面、情绪、资金流、ESG、行业宏观六大维度的深度分析，由首席策略 Agent 综合输出投资建议。
+> 🤖 六个专业 AI Agent 并行协作，内置 **Reflection Loop 自我校验重试**与**跨维度冲突检测**，结合 RAG 知识库，对 A 股进行技术、基本面、情绪、资金流、ESG、行业宏观六大维度的深度分析，由首席策略 Agent 综合研判并输出投资建议。
 
 </div>
 
@@ -22,17 +22,19 @@
 | 特性 | 说明 |
 |------|------|
 | 🧠 **多 Agent 并行** | LangGraph 编排 7 个专业 Agent，Map-Reduce 模式并行执行 |
+| 🔁 **Reflection Loop** | Agent 输出结构校验失败时自动携带错误原因重试（最多 2 次），大幅降低 JSON 解析失败率 |
+| ⚖️ **冲突检测** | 独立的 ConflictAnalyzer 节点量化各 Agent 评分分歧、数据缺口，供首席策略参考 |
 | 📚 **RAG 知识库** | LlamaIndex + DashScope Embedding，16 篇专业文档精准检索 |
 | 📊 **多源数据** | BaoStock 为主，AkShare / YFinance / 模拟数据多级降级 |
 | 🎨 **可视化界面** | Streamlit + Plotly 交互式 K 线、技术指标、财务分析图表 |
 | 🔌 **多 LLM 支持** | DeepSeek / Qwen / OpenAI / Ollama 一键切换 |
-| 💾 **智能缓存** | 10 分钟数据缓存，避免重复 API 调用 |
+| 💾 **智能缓存** | 10 分钟数据缓存 + 共享 StockDataManager，避免重复 API 调用 |
 
 ---
 
 ## 🏗️ 系统架构
 
-### 多 Agent 协作流程
+### 多 Agent 协作流程（含 Reflection Loop）
 
 ```mermaid
 flowchart TD
@@ -40,24 +42,42 @@ flowchart TD
 
     subgraph Coord["🎯 Agent 协调器 (LangGraph)"]
         direction LR
-        Map["Map 阶段\n并行分发"] --> Reduce["Reduce 阶段\n结果聚合"]
+        Map["Map 阶段\n并行分发"]
     end
 
-    Coord --> T["📈 技术分析 Agent\nMACD · RSI · 布林带"]
-    Coord --> F["💰 基本面 Agent\nPE · ROE · 现金流"]
-    Coord --> S["😊 情绪分析 Agent\n新闻 · 社交热度"]
-    Coord --> FF["💹 资金流向 Agent\n北向 · 融资融券"]
-    Coord --> E["🌱 ESG 风险 Agent\n治理 · 可持续性"]
-    Coord --> I["🏭 行业宏观 Agent\n行业景气 · 政策"]
+    Coord --> T["📈 技术分析 Agent"]
+    Coord --> F["💰 基本面 Agent"]
+    Coord --> S["😊 情绪分析 Agent"]
+    Coord --> FF["💹 资金流向 Agent"]
+    Coord --> E["🌱 ESG 风险 Agent"]
+    Coord --> I["🏭 行业宏观 Agent"]
 
-    T & F & S & FF & E & I --> Chief["👑 首席策略 Agent\n综合研判 · 投资建议"]
+    subgraph Reflect["🔁 单 Agent 内部 Reflection Loop"]
+        direction TB
+        Exec["执行分析"] --> Validate{"输出结构\n校验通过？"}
+        Validate -->|否，≤2次重试| Hint["注入错误原因\n到 Prompt"] --> Exec
+        Validate -->|是| Done["✅ 输出有效"]
+    end
 
-    Chief --> Report(["📋 分析报告\n买卖评级 · 目标价"])
+    T -.-> Reflect
+    F -.-> Reflect
+
+    T & F & S & FF & E & I --> Conflict["⚖️ 冲突检测 ConflictAnalyzer\n评分分歧 · 数据缺口 · 共识方向"]
+
+    Conflict --> Chief["👑 首席策略 Agent\n综合研判 · 引用冲突分析"]
+
+    Chief --> Report(["📋 分析报告\n买卖评级 · 目标价 · 分歧说明"])
 
     style Coord fill:#f0f7ff,stroke:#4a90d9
+    style Reflect fill:#fef2f2,stroke:#ef4444
+    style Conflict fill:#f5f3ff,stroke:#8b5cf6
     style Chief fill:#fff7e6,stroke:#f5a623
     style Report fill:#f0fff4,stroke:#52c41a
 ```
+
+> **Reflection Loop 说明**：每个专业 Agent 执行后会用 `_validate_output()` 校验输出是否满足最低质量要求（`confidence_score` 是否合理、`key_findings` 是否为空、是否为有效 JSON 等）。若校验失败，错误原因会作为 `Reflection Hint` 注入到下一次 LLM 调用的 Prompt 中，最多重试 2 次，显著降低"LLM 返回不完整 JSON 导致分析降级"的概率。
+>
+> **ConflictAnalyzer 说明**：所有专业 Agent 完成后，冲突检测节点用纯 Python 逻辑（无需 LLM，执行耗时 <10ms）统一提取各 Agent 的 0-100 评分，检测评分分歧（差距 > 30 分）、数据缺口和失败维度，输出共识方向（偏多/偏空/中性/分歧），供首席策略 Agent 在最终建议中明确说明各维度的分歧和不确定性，避免"虚假共识"。
 
 ---
 
@@ -161,6 +181,27 @@ mindmap
       HuggingFace BGE
       Ollama本地
 ```
+
+---
+
+## 🧬 Agent 管理架构演进
+
+项目从最初的"纯并行 Map-Reduce"逐步演进为带自我修正能力的工作流：
+
+| 阶段 | 架构 | 说明 |
+|------|------|------|
+| v1 | Map-Reduce | 6 个 Agent 并行执行，直接汇总给首席策略，无容错、无重试 |
+| v2 | + Bug 修复 | 修复 RAG 检索空片段、Streamlit 单例缓存、评分字段错位、随机数据造假等问题 |
+| v3（当前） | **Reflection Loop** | 每个 Agent 内置"执行 → 校验 → 重试"闭环；新增 ConflictAnalyzer 冲突检测节点；差异化超时；共享 `StockDataManager` |
+
+**核心收益：**
+
+- ✅ Agent 输出结构异常时自动重试并携带错误上下文，而非直接降级为默认值
+- ✅ 首席策略 Agent 不再"假装各维度一致"，能明确指出评分分歧和数据缺口
+- ✅ 各 Agent 差异化超时（基本面 120s / ESG 45s），避免慢 Agent 拖累整体或快 Agent 超时浪费
+- ✅ 6 个 Agent 共享一个 `StockDataManager` 实例，避免重复拉取同一股票数据
+
+详见 `hengline/agents/agent_coordinator.py`（`REFLECTION_MAX_RETRIES`、`_create_conflict_analyzer_node`、`_create_agent_node`）与 `test/test_reflection_loop.py`（31 项验收测试）。
 
 ---
 
@@ -347,6 +388,7 @@ stock-analysis-agent/
 ├── data/embeddings/     # 向量索引持久化（自动生成，不提交 git）
 ├── config/              # 配置文件
 ├── api/                 # FastAPI 接口
+├── test/                # 单元测试（Agent 修复、Reflection Loop 共 60+ 用例）
 ├── build_rag_index.py   # 知识库索引构建脚本
 ├── main.py              # 应用入口
 └── requirements.txt     # 依赖清单
@@ -372,6 +414,8 @@ stock-analysis-agent/
 | **基本信息修复** | 修复 Overview 页面市值、PE(TTM)、PB(MRQ) 不显示的问题，重排 BaoStock API 调用顺序避免 session 污染 |
 | **知识库管理 UI** | Streamlit 侧边栏新增知识库状态显示和一键重建索引按钮 |
 | **索引构建脚本** | 新增 `build_rag_index.py`，支持 `--rebuild` 参数，方便首次部署和文档更新 |
+| **Agent 系统全面体检** | 修复首席策略评分字段错位、Sentiment/ESG/Fundamental 随机数据造假、FundFlow 阈值逻辑错误、子 Agent 失败无 UI 提示等 P0-P2 级问题 |
+| **Reflection Loop** | Agent 输出校验失败后自动重试（携带错误上下文），新增 ConflictAnalyzer 冲突检测节点，差异化超时与共享数据管理器 |
 
 感谢原作者 [@neopen](https://github.com/neopen) 提供的优秀项目基础。
 
