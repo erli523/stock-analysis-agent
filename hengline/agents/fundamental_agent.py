@@ -16,6 +16,7 @@ from typing import Dict, Any
 from hengline.stock.stock_manage import StockDataManager
 
 from hengline.agents.base_agent import BaseAgent, AgentConfig, AgentResult
+from hengline.agents.result_utils import build_data_quality_fields
 from hengline.logger import debug, error, warning
 
 
@@ -379,11 +380,10 @@ class FundamentalAgent(BaseAgent):
         result = self.get_result_template()
         data_available = financial_data.get("data_available", True)
         is_simulated = bool(financial_data.get("is_simulated") or financial_data.get("__metadata__", {}).get("is_simulated"))
-        data_quality_level = (
-            "simulated" if is_simulated else
-            "unavailable" if data_available is False else
-            "partial" if financial_data.get("data_note") else
-            "verified"
+        quality_fields = build_data_quality_fields(
+            data_available=data_available,
+            data_note=financial_data.get("data_note", ""),
+            is_simulated=is_simulated,
         )
         result.update({
             "stock_code": stock_code,
@@ -397,10 +397,7 @@ class FundamentalAgent(BaseAgent):
             "risk_factors": llm_analysis.get("risk_factors", []),
             "investment_implications": llm_analysis.get("investment_implications", []),
             "confidence_score": llm_analysis.get("confidence_score", 0.85),
-            "data_available": data_available,
-            "data_note": financial_data.get("data_note", ""),
-            "data_quality_level": data_quality_level,
-            "is_simulated": is_simulated,
+            **quality_fields,
             "financial_summary": {
                 "pe_ratio": financial_data["financial_ratios"].get("pe_ratio", 0),
                 "pb_ratio": financial_data["financial_ratios"].get("pb_ratio", 0),

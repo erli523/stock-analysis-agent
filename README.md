@@ -285,7 +285,7 @@ mindmap
 | `hengline/streamlit/st_main.py` | 页面 CSS 抽取为 `APP_CSS` 常量；`_category_axis` 统一 K线/技术/对比图的交易日压缩逻辑；拆分 `show_financial_export`、`show_agent_analysis`、`show_technical` |
 | `hengline/streamlit/st_product_features.py` | 拆分 `render_financial_visuals`（趋势/雷达）与 `render_screener_page`（代码解析/单股筛选） |
 
-重构后全部 **104 项单元测试通过**（`test_agent_fixes` 47 + `test_reflection_loop` 49 + `test_streamlit_product_features` 7 + `test_vector_store` 1），并用 `300502` 在 Streamlit 界面完成概览/技术分析等视图实测验证。
+重构后全部 **107 项单元测试通过**（`test_agent_fixes` 50 + `test_reflection_loop` 49 + `test_streamlit_product_features` 7 + `test_vector_store` 1），并用 `300502` 在 Streamlit 界面完成概览/技术分析等视图实测验证。
 
 ---
 
@@ -596,7 +596,7 @@ curl -X POST http://localhost:8000/api/analyze \
 ```bash
 conda activate stock-agent
 
-# Agent 修复 + Reflection Loop / 质量门 / 冲突分析（47 + 49 用例）
+# Agent 修复 + Reflection Loop / 质量门 / 冲突分析（50 + 49 用例）
 python -m pytest test/test_agent_fixes.py test/test_reflection_loop.py -q
 
 # 产品功能 helper 测试（7 用例）
@@ -605,7 +605,7 @@ python -m pytest test/test_streamlit_product_features.py -q
 # 向量存储测试（1 用例，需 llama_index 环境）
 python -m pytest test/test_vector_store.py -q
 
-# 当前核心回归套件（104 用例）
+# 当前核心回归套件（107 用例）
 python -m pytest test/test_agent_fixes.py test/test_reflection_loop.py test/test_streamlit_product_features.py test/test_vector_store.py -q
 
 # 关键文件语法检查
@@ -637,7 +637,7 @@ stock-analysis-agent/
 ├── config/              # config.json 与环境变量映射
 ├── app/                 # FastAPI 应用入口（application.py）
 ├── api/                 # REST 路由（/api/analyze 等）
-├── test/                # 单元测试（核心回归 104 用例）
+├── test/                # 单元测试（核心回归 107 用例）
 ├── build_rag_index.py   # Agent 知识库索引构建
 ├── install.bat          # Windows 安装脚本
 ├── start.bat            # Windows 启动脚本

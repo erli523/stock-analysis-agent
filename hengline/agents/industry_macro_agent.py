@@ -16,6 +16,7 @@ import yfinance as yf
 from hengline.stock.stock_manage import StockDataManager
 
 from hengline.agents.base_agent import BaseAgent, AgentConfig, AgentResult
+from hengline.agents.result_utils import build_data_quality_fields, has_simulated_source
 from hengline.logger import debug, error, warning
 
 
@@ -370,7 +371,11 @@ class IndustryMacroAgent(BaseAgent):
         has_quant_data = bool(sector_performance or major_indices)
         data_available = bool(has_quant_data or llm_analysis.get("key_findings"))
         data_note = "" if has_quant_data else "行业/宏观量化数据不足，结论主要依赖可用公司信息与LLM文本分析。"
-        data_quality_level = "verified" if has_quant_data else ("partial" if data_available else "unavailable")
+        quality_fields = build_data_quality_fields(
+            data_available=data_available,
+            data_note=data_note,
+            is_simulated=has_simulated_source(stock_info, industry_data, macro_data),
+        )
         result = self.get_result_template()
         result.update({
             "stock_code": stock_code,
@@ -399,10 +404,7 @@ class IndustryMacroAgent(BaseAgent):
                 "key_macro_trends": macro_data.get("key_macro_trends", []),
                 "data_source": macro_data.get("data_source", ""),
             },
-            "data_available": data_available,
-            "data_note": data_note,
-            "data_quality_level": data_quality_level,
-            "is_simulated": bool(stock_info.get("is_simulated") or industry_data.get("is_simulated") or macro_data.get("is_simulated")),
+            **quality_fields,
             "industry_summary": {
                 "sector_performance": industry_data.get("sector_performance", {}),
                 "market_sentiment": macro_data.get("market_sentiment", {})

@@ -15,6 +15,7 @@ from typing import Dict, Any, List
 from hengline.stock.stock_manage import StockDataManager
 
 from hengline.agents.base_agent import BaseAgent, AgentConfig, AgentResult
+from hengline.agents.result_utils import build_data_quality_fields
 from hengline.logger import debug, error, warning
 
 
@@ -498,7 +499,12 @@ class SentimentAgent(BaseAgent):
         market_available = market_sentiment.get("data_available", True) is not False
         data_available = bool(news_available or market_available)
         data_note = "" if data_available else "新闻/社交媒体/市场情绪数据暂不可用，情绪结论主要依赖有限输入。"
-        data_quality_level = "verified" if news_available else ("partial" if data_available else "unavailable")
+        quality_fields = build_data_quality_fields(
+            data_available=data_available,
+            data_note=data_note or ("" if news_available else "新闻覆盖不足，情绪结论可靠性有限。"),
+            is_simulated=bool(stock_info.get("is_simulated") or news_data.get("is_simulated")),
+            partial_when_noted=not news_available,
+        )
         result.update({
             "stock_code": stock_code,
             "analysis_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -510,10 +516,7 @@ class SentimentAgent(BaseAgent):
             "risk_signals": llm_analysis.get("risk_signals", []),
             "sentiment_drivers": llm_analysis.get("sentiment_drivers", []),
             "confidence_score": llm_analysis.get("confidence_score", 0.85),
-            "data_available": data_available,
-            "data_note": data_note,
-            "data_quality_level": data_quality_level,
-            "is_simulated": bool(stock_info.get("is_simulated") or news_data.get("is_simulated")),
+            **quality_fields,
             "sentiment_metrics": {
                 "news_sentiment": news_data.get("sentiment_overview", {}),
                 "market_sentiment": market_sentiment.get("fear_greed_index", {})

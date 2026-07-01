@@ -13,6 +13,7 @@ from typing import Dict, Any
 import yfinance as yf
 import pandas as pd
 from hengline.agents.base_agent import BaseAgent, AgentConfig, AgentResult
+from hengline.agents.result_utils import build_data_quality_fields
 from hengline.logger import debug, error, warning
 # 从stock_manage统一获取数据
 from hengline.stock.stock_manage import StockDataManager
@@ -522,7 +523,13 @@ class FundFlowAgent(BaseAgent):
         institutional_source = str(institutional_data.get("data_source", ""))
         is_estimated = "estimated" in institutional_source or bool(institutional_note)
         is_simulated = bool(stock_info.get("is_simulated") or money_flow_indicators.get("is_simulated"))
-        data_quality_level = "simulated" if is_simulated else ("estimated" if is_estimated else "verified")
+        quality_fields = build_data_quality_fields(
+            data_available=True,
+            data_note=institutional_note,
+            is_simulated=is_simulated,
+            is_estimated=is_estimated,
+            partial_when_noted=False,
+        )
         result.update({
             "stock_code": stock_code,
             "analysis_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -534,10 +541,7 @@ class FundFlowAgent(BaseAgent):
             "alert_signals": llm_analysis.get("alert_signals", []),
             "institutional_behavior": llm_analysis.get("institutional_behavior", {}),
             "confidence_score": llm_analysis.get("confidence_score", 0.85),
-            "data_available": True,
-            "data_note": institutional_note,
-            "data_quality_level": data_quality_level,
-            "is_simulated": is_simulated,
+            **quality_fields,
             "key_metrics": {
                 "money_flow_index": money_flow_indicators.get("money_flow_index", 0),
                 "flow_classification": money_flow_indicators.get("flow_classification", "neutral"),

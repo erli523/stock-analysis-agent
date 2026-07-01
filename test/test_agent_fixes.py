@@ -48,6 +48,42 @@ def _src(agent_filename):
     return _read_src(os.path.join(AGENTS_DIR, agent_filename))
 
 
+class TestResultUtils(unittest.TestCase):
+    """验证 Agent 结果元数据 helper 的保守优先级。"""
+
+    def test_data_quality_prioritizes_simulated_over_other_states(self):
+        from hengline.agents.result_utils import build_data_quality_fields
+
+        fields = build_data_quality_fields(
+            data_available=False,
+            data_note="proxy data",
+            is_simulated=True,
+            is_estimated=True,
+        )
+
+        self.assertEqual(fields["data_quality_level"], "simulated")
+        self.assertFalse(fields["data_available"])
+        self.assertTrue(fields["is_simulated"])
+
+    def test_data_quality_marks_estimated_before_partial(self):
+        from hengline.agents.result_utils import build_data_quality_fields
+
+        fields = build_data_quality_fields(
+            data_available=True,
+            data_note="estimated from volume proxy",
+            is_estimated=True,
+        )
+
+        self.assertEqual(fields["data_quality_level"], "estimated")
+        self.assertEqual(fields["data_note"], "estimated from volume proxy")
+
+    def test_has_simulated_source_checks_multiple_inputs(self):
+        from hengline.agents.result_utils import has_simulated_source
+
+        self.assertTrue(has_simulated_source({"is_simulated": False}, {"is_simulated": True}))
+        self.assertFalse(has_simulated_source({}, {"data_source": "real"}))
+
+
 # ════════════════════════════════════════════════════════════════════════
 # P0.1  _retrieve_knowledge — NodeWithScore 解析
 # ════════════════════════════════════════════════════════════════════════

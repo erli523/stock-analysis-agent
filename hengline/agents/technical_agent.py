@@ -16,6 +16,7 @@ import pandas as pd
 from ta import trend, momentum, volume, volatility
 
 from hengline.agents.base_agent import BaseAgent, AgentConfig, AgentResult
+from hengline.agents.result_utils import build_data_quality_fields
 from hengline.logger import debug, error, warning
 # 从stock_manage统一获取数据
 from hengline.stock.stock_manage import StockDataManager
@@ -349,7 +350,11 @@ class TechnicalAgent(BaseAgent):
         """
         result = self.get_result_template()
         is_simulated = bool(getattr(price_data, "attrs", {}).get("is_simulated"))
-        data_quality_level = "simulated" if is_simulated else "verified"
+        quality_fields = build_data_quality_fields(
+            data_available=True,
+            data_note="价格行情来自模拟数据，技术指标仅供界面与流程验证。" if is_simulated else "",
+            is_simulated=is_simulated,
+        )
         result.update({
             "stock_code": stock_code,
             "analysis_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -361,10 +366,7 @@ class TechnicalAgent(BaseAgent):
             "signal_strength": llm_analysis.get("signal_strength", "neutral"),
             "key_price_levels": llm_analysis.get("key_price_levels", {}),
             "confidence_score": llm_analysis.get("confidence_score", 0.85),
-            "data_available": True,
-            "data_note": "价格行情来自模拟数据，技术指标仅供界面与流程验证。" if is_simulated else "",
-            "data_quality_level": data_quality_level,
-            "is_simulated": is_simulated,
+            **quality_fields,
             "technical_summary": {
                 "trend": technical_indicators.get("price_trend", {}),
                 "momentum": {
