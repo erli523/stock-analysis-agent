@@ -6,7 +6,8 @@ import asyncio
 import functools
 import os
 from datetime import datetime
-from typing import Annotated, Any, Dict, List, Optional, TypedDict
+from pathlib import Path
+from typing import Annotated, Any, AsyncIterator, Dict, List, Optional, TypedDict
 
 import nest_asyncio
 from langgraph.graph import END, START, StateGraph
@@ -42,6 +43,7 @@ def merge_lists(left: Optional[List[Dict[str, Any]]], right: Optional[List[Dict[
 
 
 REFLECTION_MAX_RETRIES = 2
+QUALITY_GATE_MAX_RETRIES = int(os.getenv("QUALITY_GATE_MAX_RETRIES", "1"))
 
 AGENT_TIMEOUTS: Dict[str, int] = {
     "FundamentalAgent": int(os.getenv("FUNDAMENTAL_TIMEOUT", "120")),
@@ -59,6 +61,11 @@ class AgentState(TypedDict, total=False):
     time_range: str
     agent_params: Dict[str, Any]
     chief_params: Dict[str, Any]
+    active_agent_names: List[str]
+    retry_agent_names: List[str]
+    quality_retry_count: int
+    routing_decision: Dict[str, Any]
+    quality_gate: Dict[str, Any]
     agent_results: Annotated[Dict[str, AgentResult], merge_dicts]
     workflow_trace: Annotated[List[Dict[str, Any]], merge_lists]
     conflict_analysis: Optional[Dict[str, Any]]
@@ -82,6 +89,10 @@ class AgentCoordinator:
         self.config = config or {}
         self.agents: Dict[str, Any] = {}
         self.graph = None
+        self.checkpointer = None
+        self.checkpoint_backend_active = None
+        self.checkpoint_path_active = None
+        self.checkpoint_enabled = self._get_checkpoint_enabled()
         configured_agents = self.config.get("enabled_agents") or self.specialist_agent_names
         self.specialist_agent_names = [
             name for name in configured_agents
@@ -99,6 +110,30 @@ class AgentCoordinator:
         except (TypeError, ValueError):
             warning(f"Invalid AGENT_LLM_CONCURRENCY={raw_value!r}; falling back to 3")
             return 3
+
+    def _get_checkpoint_enabled(self) -> bool:
+        """Return whether LangGraph should compile with a checkpointer."""
+        raw_value = os.getenv(
+            "LANGGRAPH_CHECKPOINTS_ENABLED",
+            str(getattr(self, "config", {}).get("enable_checkpointing", False)),
+        )
+        return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _get_checkpoint_backend(self) -> str:
+        """Return requested checkpoint backend: sqlite or memory."""
+        raw_value = os.getenv(
+            "LANGGRAPH_CHECKPOINT_BACKEND",
+            str(getattr(self, "config", {}).get("checkpoint_backend", "memory")),
+        )
+        return str(raw_value).strip().lower() or "memory"
+
+    def _get_checkpoint_path(self) -> str:
+        """Return SQLite checkpoint path when persistent checkpointing is available."""
+        raw_value = os.getenv(
+            "LANGGRAPH_CHECKPOINT_PATH",
+            str(getattr(self, "config", {}).get("checkpoint_path", "data/checkpoints/langgraph.sqlite")),
+        )
+        return raw_value
 
     def initialize_agents(self):
         """Initialize all specialist agents and the chief strategy agent."""
@@ -180,17 +215,69 @@ class AgentCoordinator:
             debug("Building LangGraph workflow")
             graph = StateGraph(AgentState)
 
+            graph.add_node("agent_router", self._create_agent_router_node())
+            graph.add_edge(START, "agent_router")
+
             for name in self.specialist_agent_names:
                 graph.add_node(name, self._create_agent_node(name))
-                graph.add_edge(START, name)
-                graph.add_edge(name, "conflict_analyzer")
+                graph.add_edge(name, "agent_quality_gate")
 
+            graph.add_conditional_edges(
+                "agent_router",
+                self._route_specialist_agents,
+                {name: name for name in self.specialist_agent_names},
+            )
+            graph.add_node("agent_quality_gate", self._create_quality_gate_node())
+            graph.add_conditional_edges(
+                "agent_quality_gate",
+                self._route_after_quality_gate,
+                {"retry": "agent_router", "continue": "conflict_analyzer"},
+            )
             graph.add_node("conflict_analyzer", self._create_conflict_analyzer_node())
             graph.add_node("ChiefStrategyAgent", self._create_chief_node())
             graph.add_edge("conflict_analyzer", "ChiefStrategyAgent")
             graph.add_edge("ChiefStrategyAgent", END)
 
-            self.graph = graph.compile()
+            compile_kwargs = {}
+            self.checkpointer = None
+            self.checkpoint_backend_active = None
+            self.checkpoint_path_active = None
+            if self.checkpoint_enabled:
+                backend = self._get_checkpoint_backend()
+                if backend == "sqlite":
+                    try:
+                        from langgraph.checkpoint.sqlite import SqliteSaver
+
+                        checkpoint_path = Path(self._get_checkpoint_path())
+                        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+                        self.checkpointer = SqliteSaver.from_conn_string(str(checkpoint_path))
+                        self.checkpoint_backend_active = "sqlite"
+                        self.checkpoint_path_active = str(checkpoint_path)
+                        compile_kwargs["checkpointer"] = self.checkpointer
+                        debug(f"LangGraph SQLite checkpointing enabled: {checkpoint_path}")
+                    except Exception as exc:
+                        warning(
+                            "LangGraph SQLite checkpointing unavailable; "
+                            f"falling back to MemorySaver: {exc}"
+                        )
+                        backend = "memory"
+                if backend != "sqlite":
+                    try:
+                        from langgraph.checkpoint.memory import MemorySaver
+
+                        self.checkpointer = MemorySaver()
+                        self.checkpoint_backend_active = "memory"
+                        self.checkpoint_path_active = None
+                        compile_kwargs["checkpointer"] = self.checkpointer
+                        debug("LangGraph MemorySaver checkpointing enabled")
+                    except Exception as exc:
+                        self.checkpointer = None
+                        self.checkpoint_enabled = False
+                        warning(f"LangGraph checkpointing disabled; MemorySaver unavailable: {exc}")
+            else:
+                self.checkpointer = None
+
+            self.graph = graph.compile(**compile_kwargs)
             debug("LangGraph workflow built")
 
         except Exception as exc:
@@ -210,11 +297,13 @@ class AgentCoordinator:
 
     def get_workflow_topology(self) -> Dict[str, Any]:
         """Return the concrete LangGraph topology built for this coordinator."""
-        edges = []
+        edges = [{"from": "START", "to": "agent_router"}]
         for name in self.specialist_agent_names:
-            edges.append({"from": "START", "to": name})
-            edges.append({"from": name, "to": "conflict_analyzer"})
+            edges.append({"from": "agent_router", "to": name, "condition": "active_agent_names"})
+            edges.append({"from": name, "to": "agent_quality_gate"})
         edges.extend([
+            {"from": "agent_quality_gate", "to": "agent_router", "condition": "retry"},
+            {"from": "agent_quality_gate", "to": "conflict_analyzer", "condition": "continue"},
             {"from": "conflict_analyzer", "to": "ChiefStrategyAgent"},
             {"from": "ChiefStrategyAgent", "to": "END"},
         ])
@@ -222,7 +311,9 @@ class AgentCoordinator:
         return {
             "nodes": [
                 "START",
+                "agent_router",
                 *self.specialist_agent_names,
+                "agent_quality_gate",
                 "conflict_analyzer",
                 "ChiefStrategyAgent",
                 "END",
@@ -235,16 +326,26 @@ class AgentCoordinator:
             "enabled_specialists": list(self.specialist_agent_names),
             "langgraph_features": [
                 "StateGraph",
-                "parallel fan-out from START",
+                "conditional routing from agent_router",
+                "explicit agent quality gate node",
+                "conditional graph retry from quality gate to router",
                 "reducer-based parallel state merge",
                 "fan-in conflict analysis node",
                 "final synthesis node",
             ],
             "current_limitations": [
-                "reflection retry runs inside each node instead of conditional graph loops",
-                "no persisted LangGraph checkpoint store is configured",
-                "UI/API currently return final results instead of streaming node events",
+                "node-local reflection retry still handles transient call failures before graph-level retry",
+                "checkpointing is in-memory only when LANGGRAPH_CHECKPOINTS_ENABLED is enabled",
+                "human approval is represented as guardrails/disclaimers rather than an interrupt node",
             ],
+            "checkpointing": {
+                "enabled": bool(getattr(self, "checkpoint_enabled", False)),
+                "type": type(getattr(self, "checkpointer", None)).__name__ if getattr(self, "checkpointer", None) else None,
+                "requested_backend": self._get_checkpoint_backend() if getattr(self, "checkpoint_enabled", False) else None,
+                "backend": getattr(self, "checkpoint_backend_active", None),
+                "path": getattr(self, "checkpoint_path_active", None),
+                "persistence": getattr(self, "checkpoint_backend_active", None),
+            },
         }
 
     @staticmethod
@@ -306,6 +407,220 @@ class AgentCoordinator:
 
         return 50.0
 
+    def _select_active_agents(self, state: AgentState) -> Dict[str, Any]:
+        """Choose which specialist agents should run for this request."""
+        agent_params = state.get("agent_params", {}) or {}
+        retry_agents = [
+            name for name in (state.get("retry_agent_names") or [])
+            if name in self.specialist_agent_names
+        ]
+        if retry_agents:
+            return {
+                "selected_agents": retry_agents,
+                "available_agents": list(self.specialist_agent_names),
+                "routing_reason": "quality_gate_retry",
+                "analysis_focus": agent_params.get("analysis_focus") or agent_params.get("analysis_type"),
+                "question": agent_params.get("question") or agent_params.get("user_question"),
+            }
+
+        requested = (
+            agent_params.get("enabled_agents")
+            or agent_params.get("agents")
+            or self.config.get("enabled_agents")
+            or []
+        )
+        focus_text = " ".join(
+            str(item or "")
+            for item in (
+                agent_params.get("analysis_focus"),
+                agent_params.get("analysis_type"),
+                agent_params.get("question"),
+                agent_params.get("user_question"),
+                state.get("time_range"),
+            )
+        ).lower()
+
+        explicit_agents = [
+            name for name in requested
+            if name in self.specialist_agent_names
+        ] if isinstance(requested, (list, tuple, set)) else []
+        if explicit_agents:
+            selected = explicit_agents
+            reason = "explicit_enabled_agents"
+        else:
+            selected_set = set()
+            keyword_map = {
+                "FundamentalAgent": [
+                    "fundamental", "financial", "finance", "valuation", "pe", "pb",
+                    "eps", "income", "cash flow", "profit", "基本面", "财务", "估值",
+                    "盈利", "利润", "现金流", "资产负债",
+                ],
+                "TechnicalAgent": [
+                    "technical", "trend", "kline", "candlestick", "volume", "rsi",
+                    "macd", "ma", "技术", "趋势", "k线", "k 线", "成交量", "量价",
+                    "均线",
+                ],
+                "IndustryMacroAgent": [
+                    "industry", "macro", "sector", "policy", "benchmark", "compare",
+                    "行业", "宏观", "政策", "同业", "可比", "指数", "基准",
+                ],
+                "SentimentAgent": [
+                    "sentiment", "news", "public opinion", "announcement",
+                    "情绪", "新闻", "舆情", "公告", "研报", "消息",
+                ],
+                "FundFlowAgent": [
+                    "fund flow", "money flow", "capital", "institution", "northbound", "volume",
+                    "资金", "主力", "北向", "机构", "成交", "融资融券",
+                ],
+                "ESGRiskAgent": [
+                    "esg", "governance", "risk", "controversy", "sustainability",
+                    "治理", "风险", "争议", "合规", "监管", "可持续",
+                ],
+            }
+            for agent_name, keywords in keyword_map.items():
+                if agent_name in self.specialist_agent_names and any(keyword in focus_text for keyword in keywords):
+                    selected_set.add(agent_name)
+
+            if not selected_set:
+                selected = list(self.specialist_agent_names)
+                reason = "default_full_research"
+            else:
+                selected_set.add("TechnicalAgent")
+                selected = [name for name in self.specialist_agent_names if name in selected_set]
+                reason = "question_keyword_routing"
+
+        if not selected:
+            selected = list(self.specialist_agent_names)
+            reason = "fallback_full_research"
+
+        return {
+            "selected_agents": selected,
+            "available_agents": list(self.specialist_agent_names),
+            "routing_reason": reason,
+            "analysis_focus": agent_params.get("analysis_focus") or agent_params.get("analysis_type"),
+            "question": agent_params.get("question") or agent_params.get("user_question"),
+        }
+
+    def _create_agent_router_node(self):
+        """Create a LangGraph node that records the per-request routing decision."""
+
+        def agent_router_node(state: AgentState) -> Dict[str, Any]:
+            routing_decision = self._select_active_agents(state)
+            selected = routing_decision["selected_agents"]
+            info(
+                "Agent router selected "
+                f"{len(selected)}/{len(self.specialist_agent_names)} specialists: {', '.join(selected)}"
+            )
+            return {
+                "active_agent_names": selected,
+                "retry_agent_names": [],
+                "routing_decision": routing_decision,
+                "workflow_trace": [
+                    self._trace_event(
+                        "agent_router",
+                        "completed",
+                        selected_agents=selected,
+                        routing_reason=routing_decision.get("routing_reason"),
+                    )
+                ],
+            }
+
+        return agent_router_node
+
+    @staticmethod
+    def _route_specialist_agents(state: AgentState) -> List[str]:
+        """Return specialist node names for LangGraph conditional fan-out."""
+        return list(state.get("active_agent_names") or [])
+
+    @staticmethod
+    def _route_after_quality_gate(state: AgentState) -> str:
+        """Route to a graph-level retry when the quality gate requested it."""
+        return "retry" if state.get("retry_agent_names") else "continue"
+
+    def _create_quality_gate_node(self):
+        """Create a graph-level validation node for specialist outputs."""
+
+        def quality_gate_node(state: AgentState) -> Dict[str, Any]:
+            agent_results = state.get("agent_results", {}) or {}
+            active_agents = state.get("active_agent_names") or list(agent_results.keys())
+            issues: List[Dict[str, Any]] = []
+            passed_agents: List[str] = []
+            retryable_agents: List[str] = []
+
+            for agent_name in active_agents:
+                result = agent_results.get(agent_name)
+                if result is None:
+                    issues.append({"agent": agent_name, "type": "missing_result", "severity": "high"})
+                    retryable_agents.append(agent_name)
+                    continue
+                if not result.success:
+                    issues.append({
+                        "agent": agent_name,
+                        "type": "agent_failed",
+                        "severity": "high",
+                        "message": result.error_message,
+                    })
+                    retryable_agents.append(agent_name)
+                    continue
+                data = result.result or {}
+                agent_issues = []
+                if not data.get("key_findings"):
+                    agent_issues.append({"type": "empty_key_findings", "severity": "medium"})
+                    retryable_agents.append(agent_name)
+                try:
+                    if float(result.confidence_score or 0.0) <= 0.1:
+                        agent_issues.append({"type": "low_confidence", "severity": "medium"})
+                        retryable_agents.append(agent_name)
+                except (TypeError, ValueError):
+                    agent_issues.append({"type": "invalid_confidence", "severity": "medium"})
+                    retryable_agents.append(agent_name)
+
+                quality_level = str(data.get("data_quality_level", "")).lower()
+                if data.get("is_simulated") or quality_level in {"simulated", "estimated", "unavailable", "partial"}:
+                    agent_issues.append({
+                        "type": f"data_quality_{quality_level or 'limited'}",
+                        "severity": "high" if quality_level in {"simulated", "unavailable"} else "medium",
+                        "message": data.get("data_note", ""),
+                    })
+
+                if agent_issues:
+                    for issue in agent_issues:
+                        issues.append({"agent": agent_name, **issue})
+                else:
+                    passed_agents.append(agent_name)
+
+            retry_count = int(state.get("quality_retry_count") or 0)
+            retry_agent_names = sorted(set(retryable_agents)) if retry_count < QUALITY_GATE_MAX_RETRIES else []
+            next_retry_count = retry_count + 1 if retry_agent_names else retry_count
+            quality_gate = {
+                "passed": not any(issue.get("severity") == "high" for issue in issues),
+                "passed_agents": passed_agents,
+                "issues": issues,
+                "issue_count": len(issues),
+                "high_severity_count": sum(1 for issue in issues if issue.get("severity") == "high"),
+                "retry_agent_names": retry_agent_names,
+                "retry_count": next_retry_count,
+                "max_retries": QUALITY_GATE_MAX_RETRIES,
+            }
+            return {
+                "quality_gate": quality_gate,
+                "retry_agent_names": retry_agent_names,
+                "quality_retry_count": next_retry_count,
+                "workflow_trace": [
+                    self._trace_event(
+                        "agent_quality_gate",
+                        "completed",
+                        passed=quality_gate["passed"],
+                        issue_count=quality_gate["issue_count"],
+                        high_severity_count=quality_gate["high_severity_count"],
+                        retry_agent_names=retry_agent_names,
+                        retry_count=next_retry_count,
+                    )
+                ],
+            }
+
+        return quality_gate_node
+
     def _create_conflict_analyzer_node(self):
         """Analyze specialist result divergence before the chief synthesis step."""
 
@@ -336,6 +651,12 @@ class AgentCoordinator:
                 if result_data.get("data_available") is False:
                     note = result_data.get("data_note", "data unavailable")
                     data_gaps.append(f"{name}: {str(note)[:80]}")
+                quality_level = str(result_data.get("data_quality_level", "")).lower()
+                if result_data.get("is_simulated") is True or quality_level == "simulated":
+                    data_gaps.append(f"{name}: simulated data was used")
+                elif quality_level in {"partial", "estimated", "unavailable"}:
+                    note = result_data.get("data_note") or f"data_quality_level={quality_level}"
+                    data_gaps.append(f"{name}: {str(note)[:80]}")
 
             names = list(scores.keys())
             for idx, left_name in enumerate(names):
@@ -352,16 +673,16 @@ class AgentCoordinator:
                 bullish_count = sum(1 for score in scores.values() if score >= 60)
                 bearish_count = sum(1 for score in scores.values() if score <= 40)
                 if bullish_count >= len(scores) * 0.6:
-                    consensus = "偏多"
+                    consensus = "bullish"
                 elif bearish_count >= len(scores) * 0.6:
-                    consensus = "偏空"
+                    consensus = "bearish"
                 elif score_divergences:
-                    consensus = "分歧"
+                    consensus = "divergent"
                 else:
-                    consensus = "中性"
+                    consensus = "neutral"
             else:
                 average_score = 50.0
-                consensus = "数据不足"
+                consensus = "insufficient_data"
 
             conflict_result = {
                 "has_conflicts": bool(score_divergences or len(failed_agents) >= 2),
@@ -579,25 +900,160 @@ class AgentCoordinator:
 
         return chief_node
 
+    def _create_initial_state(
+        self,
+        stock_code: str,
+        time_range: str,
+        analysis_start_time: str,
+        kwargs: Dict[str, Any],
+    ) -> AgentState:
+        """Build the initial LangGraph state shared by invoke and streaming paths."""
+        return AgentState(
+            stock_code=stock_code,
+            time_range=time_range,
+            agent_params=kwargs.get("agent_params", {}),
+            chief_params=kwargs.get("chief_params", {}),
+            active_agent_names=[],
+            retry_agent_names=[],
+            quality_retry_count=0,
+            routing_decision={},
+            quality_gate={},
+            agent_results={},
+            workflow_trace=[],
+            conflict_analysis=None,
+            final_result=None,
+            analysis_start_time=analysis_start_time,
+        )
+
+    def _build_workflow_config(
+        self,
+        stock_code: str,
+        analysis_start_time: str,
+        kwargs: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Build optional LangGraph runnable config, including checkpoint thread id."""
+        workflow_config = kwargs.get("workflow_config")
+        if self.checkpoint_enabled:
+            thread_id = kwargs.get("thread_id") or f"{stock_code}-{analysis_start_time}"
+            workflow_config = {
+                **(workflow_config or {}),
+                "configurable": {
+                    **((workflow_config or {}).get("configurable", {})),
+                    "thread_id": thread_id,
+                },
+            }
+        return workflow_config
+
+    @staticmethod
+    def _safe_event_value(value: Any) -> Any:
+        """Convert event values into JSON-friendly diagnostics."""
+        if isinstance(value, AgentResult):
+            return {
+                "agent_name": value.agent_name,
+                "success": value.success,
+                "confidence_score": value.confidence_score,
+                "error_message": value.error_message,
+            }
+        if isinstance(value, dict):
+            return {key: AgentCoordinator._safe_event_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [AgentCoordinator._safe_event_value(item) for item in value]
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
+
+    def _normalize_stream_event(self, raw_event: Dict[str, Any]) -> Dict[str, Any]:
+        """Reduce LangGraph stream events to a stable UI/API event shape."""
+        metadata = raw_event.get("metadata") or {}
+        data = raw_event.get("data") or {}
+        return {
+            "event": raw_event.get("event", "unknown"),
+            "name": raw_event.get("name", ""),
+            "node": metadata.get("langgraph_node") or raw_event.get("name", ""),
+            "timestamp": datetime.now().isoformat(),
+            "run_id": raw_event.get("run_id"),
+            "data": self._safe_event_value(data),
+        }
+
+    async def stream_analysis_events_async(
+        self,
+        stock_code: str,
+        time_range: str = "1y",
+        **kwargs,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """Stream normalized LangGraph execution events without changing analyze_async."""
+        analysis_start_time = datetime.now().isoformat()
+        initial_state = self._create_initial_state(stock_code, time_range, analysis_start_time, kwargs)
+        workflow_config = self._build_workflow_config(stock_code, analysis_start_time, kwargs)
+        final_state: Optional[Dict[str, Any]] = None
+
+        yield {
+            "event": "workflow_started",
+            "name": "AgentCoordinator",
+            "node": "START",
+            "timestamp": analysis_start_time,
+            "stock_code": stock_code,
+            "time_range": time_range,
+        }
+
+        try:
+            stream_kwargs = {"version": "v2"}
+            if workflow_config:
+                stream_kwargs["config"] = workflow_config
+
+            async for raw_event in self.graph.astream_events(initial_state, **stream_kwargs):
+                normalized = self._normalize_stream_event(raw_event)
+                yield normalized
+
+                output = (raw_event.get("data") or {}).get("output")
+                if isinstance(output, dict) and (
+                    "final_result" in output or "agent_results" in output or "conflict_analysis" in output
+                ):
+                    final_state = output
+
+            finished_at = datetime.now().isoformat()
+            if final_state and final_state.get("final_result") is not None:
+                report = self._generate_analysis_report(final_state)
+                report["analysis_time"] = finished_at
+                report["elapsed_time_seconds"] = (
+                    datetime.fromisoformat(finished_at)
+                    - datetime.fromisoformat(analysis_start_time)
+                ).total_seconds()
+                yield {
+                    "event": "workflow_finished",
+                    "name": "AgentCoordinator",
+                    "node": "END",
+                    "timestamp": finished_at,
+                    "report": report,
+                }
+            else:
+                yield {
+                    "event": "workflow_finished",
+                    "name": "AgentCoordinator",
+                    "node": "END",
+                    "timestamp": finished_at,
+                }
+        except Exception as exc:
+            yield {
+                "event": "workflow_error",
+                "name": "AgentCoordinator",
+                "node": "ERROR",
+                "timestamp": datetime.now().isoformat(),
+                "error": str(exc),
+            }
+
     async def analyze_async(self, stock_code: str, time_range: str = "1y", **kwargs) -> Dict[str, Any]:
         """Run the complete async analysis workflow."""
         try:
             debug(f"Starting coordinated analysis for {stock_code}")
             analysis_start_time = datetime.now().isoformat()
-            initial_state = AgentState(
-                stock_code=stock_code,
-                time_range=time_range,
-                agent_params=kwargs.get("agent_params", {}),
-                chief_params=kwargs.get("chief_params", {}),
-                agent_results={},
-                workflow_trace=[],
-                conflict_analysis=None,
-                final_result=None,
-                analysis_start_time=analysis_start_time,
-            )
+            initial_state = self._create_initial_state(stock_code, time_range, analysis_start_time, kwargs)
 
             @performance_logger(f"Run coordinated analysis - {stock_code}")
             async def execute_workflow():
+                workflow_config = self._build_workflow_config(stock_code, analysis_start_time, kwargs)
+                if workflow_config:
+                    return await self.graph.ainvoke(initial_state, config=workflow_config)
                 return await self.graph.ainvoke(initial_state)
 
             final_state = await execute_workflow()
@@ -645,13 +1101,20 @@ class AgentCoordinator:
             "final_recommendation": {},
             "detailed_results": {},
             "conflict_analysis": final_state.get("conflict_analysis", {}) or {},
+            "quality_gate": final_state.get("quality_gate", {}) or {},
             "workflow_trace": final_state.get("workflow_trace", []) or [],
             "workflow_metadata": {
                 "specialist_agents": self.specialist_agent_names,
+                "active_agent_names": final_state.get("active_agent_names", []) or [],
+                "routing_decision": final_state.get("routing_decision", {}) or {},
                 "join_node": "conflict_analyzer",
                 "final_node": "ChiefStrategyAgent",
-                "execution_model": "parallel_specialists_then_synthesis",
+                "execution_model": "conditional_specialist_routing_then_synthesis",
                 "topology": self.get_workflow_topology(),
+                "checkpointing_enabled": bool(getattr(self, "checkpoint_enabled", False)),
+                "checkpointer_type": type(getattr(self, "checkpointer", None)).__name__ if getattr(self, "checkpointer", None) else None,
+                "checkpoint_backend": getattr(self, "checkpoint_backend_active", None),
+                "checkpoint_path": getattr(self, "checkpoint_path_active", None),
             },
         }
 

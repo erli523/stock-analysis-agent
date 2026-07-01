@@ -900,6 +900,34 @@ def render_recommendation(recommendation: dict):
         m2.metric("风险评分", format_score(metrics.get("risk_score")))
         m3.metric("风险等级", format_optional(metrics.get("risk_level")))
 
+    data_quality = recommendation.get("data_quality") or {}
+    if data_quality:
+        q1, q2, q3 = st.columns(3)
+        q1.metric("数据质量", format_optional(data_quality.get("level")))
+        q2.metric("质量评分", format_score(data_quality.get("score")))
+        q3.metric("失败/模拟维度", len(data_quality.get("failed_agents") or []) + len(data_quality.get("simulated_agents") or []))
+        policy = data_quality.get("decision_policy")
+        if policy:
+            st.caption(policy)
+
+    guardrail_notes = recommendation.get("guardrail_notes") or []
+    if guardrail_notes:
+        with st.expander("建议护栏说明", expanded=False):
+            for note in guardrail_notes:
+                st.markdown(f"- {note}")
+
+    human_review = recommendation.get("human_review") or {}
+    if human_review:
+        review_reasons = human_review.get("reasons") or []
+        if human_review.get("required"):
+            st.warning(human_review.get("policy") or "该结论需要人工复核后再参考。")
+        else:
+            st.caption(human_review.get("policy"))
+        if review_reasons:
+            with st.expander("人工复核原因", expanded=False):
+                for reason in review_reasons:
+                    st.markdown(f"- {reason}")
+
     section_title("分析摘要")
     st.write(summary)
 
@@ -912,6 +940,20 @@ def render_recommendation(recommendation: dict):
     with c1:
         section_title("仓位建议")
         st.write(format_optional(recommendation.get("position_suggestion"), "暂未返回仓位建议。"))
+        position_plan = recommendation.get("position_plan") or {}
+        if position_plan:
+            position_range = position_plan.get("suggested_position_range") or {}
+            st.metric("建议仓位区间", format_optional(position_range.get("display"), "N/A"))
+            st.caption(position_plan.get("entry_plan", ""))
+            controls = position_plan.get("risk_controls") or {}
+            if controls:
+                with st.expander("仓位风控参数", expanded=False):
+                    st.write({
+                        "止损比例": f"{controls.get('stop_loss_pct', 0) * 100:.0f}%",
+                        "止盈复核比例": f"{controls.get('take_profit_review_pct', 0) * 100:.0f}%",
+                        "单股上限": f"{controls.get('max_single_stock_pct', 0) * 100:.0f}%",
+                        "再平衡触发": controls.get("rebalance_trigger", ""),
+                    })
         section_title("适合投资者")
         st.write(format_optional(recommendation.get("suitable_investors"), "暂未返回适合投资者画像。"))
     with c2:
@@ -927,6 +969,29 @@ def render_recommendation(recommendation: dict):
     if risk_disclosure:
         with st.expander("风险提示", expanded=False):
             st.write(risk_disclosure)
+
+    decision_boundaries = recommendation.get("decision_boundaries") or {}
+    if decision_boundaries:
+        with st.expander("失效条件与反向风险", expanded=False):
+            reverse_risks = decision_boundaries.get("reverse_risks") or []
+            invalidation = decision_boundaries.get("invalidation_conditions") or []
+            recheck = decision_boundaries.get("recheck_triggers") or []
+            if reverse_risks:
+                st.markdown("**反向风险**")
+                for item in reverse_risks:
+                    st.markdown(f"- {item}")
+            if invalidation:
+                st.markdown("**结论失效条件**")
+                for item in invalidation:
+                    st.markdown(f"- {item}")
+            if recheck:
+                st.markdown("**重新检查触发器**")
+                for item in recheck:
+                    st.markdown(f"- {item}")
+
+    disclaimer = recommendation.get("compliance_disclaimer")
+    if disclaimer:
+        st.caption(disclaimer)
 
 
 def render_agent_status(status: dict):

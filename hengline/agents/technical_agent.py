@@ -348,6 +348,8 @@ class TechnicalAgent(BaseAgent):
             Dict[str, Any]: 结构化的结果
         """
         result = self.get_result_template()
+        is_simulated = bool(getattr(price_data, "attrs", {}).get("is_simulated"))
+        data_quality_level = "simulated" if is_simulated else "verified"
         result.update({
             "stock_code": stock_code,
             "analysis_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -359,6 +361,10 @@ class TechnicalAgent(BaseAgent):
             "signal_strength": llm_analysis.get("signal_strength", "neutral"),
             "key_price_levels": llm_analysis.get("key_price_levels", {}),
             "confidence_score": llm_analysis.get("confidence_score", 0.85),
+            "data_available": True,
+            "data_note": "价格行情来自模拟数据，技术指标仅供界面与流程验证。" if is_simulated else "",
+            "data_quality_level": data_quality_level,
+            "is_simulated": is_simulated,
             "technical_summary": {
                 "trend": technical_indicators.get("price_trend", {}),
                 "momentum": {

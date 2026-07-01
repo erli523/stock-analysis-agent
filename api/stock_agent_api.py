@@ -12,6 +12,7 @@ from typing import Dict, Any, List, Optional
 
 from fastapi import APIRouter
 from fastapi import HTTPException, Query, Depends, Body
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from config.config import get_data_output_path
@@ -47,6 +48,10 @@ class StockAnalysisRequest(BaseModel):
     time_range: str = Field(default="1y", description="时间范围", example="1y")
     agent_params: Optional[Dict[str, Any]] = Field(default={}, description="智能体参数")
     chief_params: Optional[Dict[str, Any]] = Field(default={}, description="首席策略官参数")
+    enabled_agents: Optional[List[str]] = Field(default=None, description="Specialist agents to run")
+    analysis_focus: Optional[str] = Field(default=None, description="Analysis focus for automatic agent routing")
+    question: Optional[str] = Field(default=None, description="User question for automatic agent routing")
+    thread_id: Optional[str] = Field(default=None, description="LangGraph checkpoint thread id")
 
 
 class SingleAgentRequest(BaseModel):
@@ -86,6 +91,25 @@ class SuccessResponse(BaseModel):
 
 
 # API端点
+def encode_sse_event(event: Dict[str, Any]) -> str:
+    """Encode one event as Server-Sent Events text."""
+    event_name = str(event.get("event", "message"))
+    data = json.dumps(event, ensure_ascii=False, default=str)
+    return f"event: {event_name}\ndata: {data}\n\n"
+
+
+def build_agent_params(request: StockAnalysisRequest) -> Dict[str, Any]:
+    """Merge legacy agent_params with first-class routing request fields."""
+    params = dict(request.agent_params or {})
+    if request.enabled_agents is not None:
+        params["enabled_agents"] = request.enabled_agents
+    if request.analysis_focus:
+        params["analysis_focus"] = request.analysis_focus
+    if request.question:
+        params["question"] = request.question
+    return params
+
+
 @app.post("/analyze", response_model=Dict[str, Any], summary="执行股票综合分析")
 async def analyze_stock(request: StockAnalysisRequest, coordinator: AgentCoordinator = Depends(get_coordinator)) -> Dict[str, Any]:
     """
@@ -105,8 +129,9 @@ async def analyze_stock(request: StockAnalysisRequest, coordinator: AgentCoordin
         result = coordinator.analyze(
             stock_code=request.stock_code,
             time_range=request.time_range,
-            agent_params=request.agent_params,
-            chief_params=request.chief_params
+            agent_params=build_agent_params(request),
+            chief_params=request.chief_params,
+            thread_id=request.thread_id,
         )
 
         # 保存结果到文件
@@ -116,6 +141,43 @@ async def analyze_stock(request: StockAnalysisRequest, coordinator: AgentCoordin
 
     except Exception as e:
         error(f"股票分析请求处理失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/analyze/stream", summary="流式执行股票综合分析")
+async def stream_analyze_stock(
+    request: StockAnalysisRequest,
+    coordinator: AgentCoordinator = Depends(get_coordinator),
+) -> StreamingResponse:
+    """
+    通过 Server-Sent Events 流式返回 LangGraph 节点执行事件。
+
+    最终事件 `workflow_finished` 中包含完整分析报告。
+    """
+    try:
+        info(f"接收到股票流式分析请求: {request.stock_code}, 时间范围: {request.time_range}")
+
+        async def event_generator():
+            async for event in coordinator.stream_analysis_events_async(
+                stock_code=request.stock_code,
+                time_range=request.time_range,
+                agent_params=build_agent_params(request),
+                chief_params=request.chief_params,
+                thread_id=request.thread_id,
+            ):
+                report = event.get("report")
+                if report:
+                    save_analysis_result(report, request.stock_code)
+                yield encode_sse_event(event)
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    except Exception as e:
+        error(f"股票流式分析请求处理失败: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

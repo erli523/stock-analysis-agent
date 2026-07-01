@@ -205,6 +205,7 @@ class SentimentAgent(BaseAgent):
                 # 提取关键主题
                 key_topics = self._extract_key_topics([news_item["title"] for news_item in recent_news])
                 news_data["key_topics"] = key_topics[:5]  # 取前5个主题
+                news_data["event_analysis"] = self._classify_event_impact(recent_news)
 
         except Exception as e:
             error(f"获取新闻数据失败: {str(e)}")
@@ -318,6 +319,79 @@ class SentimentAgent(BaseAgent):
         sorted_topics = sorted(topic_counts.keys(), key=lambda x: topic_counts[x], reverse=True)
         return sorted_topics
 
+    def _classify_event_impact(self, news_items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Classify news titles into investment-relevant event buckets."""
+        event_rules = {
+            "earnings": {
+                "keywords": ["财报", "业绩", "营收", "净利润", "预告", "快报", "亏损", "盈利"],
+                "severity": "high",
+                "description": "财报/业绩事件",
+            },
+            "corporate_action": {
+                "keywords": ["分红", "送转", "回购", "增发", "定增", "配股", "重组", "并购"],
+                "severity": "medium",
+                "description": "资本运作事件",
+            },
+            "shareholder_change": {
+                "keywords": ["减持", "增持", "解禁", "质押", "股东", "董监高"],
+                "severity": "high",
+                "description": "股东/股份变动事件",
+            },
+            "regulatory": {
+                "keywords": ["监管", "问询", "处罚", "立案", "调查", "诉讼", "违规"],
+                "severity": "high",
+                "description": "监管/合规事件",
+            },
+            "business": {
+                "keywords": ["订单", "合同", "合作", "中标", "产品", "产能", "客户"],
+                "severity": "medium",
+                "description": "经营进展事件",
+            },
+            "policy": {
+                "keywords": ["政策", "补贴", "关税", "出口", "进口", "产业规划"],
+                "severity": "medium",
+                "description": "政策/宏观事件",
+            },
+        }
+        events: List[Dict[str, Any]] = []
+        severity_rank = {"low": 1, "medium": 2, "high": 3}
+
+        for item in news_items:
+            title = str(item.get("title", ""))
+            matched = []
+            for event_type, rule in event_rules.items():
+                if any(keyword in title for keyword in rule["keywords"]):
+                    matched.append({
+                        "event_type": event_type,
+                        "description": rule["description"],
+                        "severity": rule["severity"],
+                    })
+            for match in matched:
+                events.append({
+                    **match,
+                    "title": title,
+                    "publisher": item.get("publisher", ""),
+                    "publish_time": item.get("publish_time", ""),
+                    "sentiment": item.get("sentiment", "neutral"),
+                })
+
+        high_impact = [event for event in events if event["severity"] == "high"]
+        event_counts: Dict[str, int] = {}
+        for event in events:
+            event_counts[event["event_type"]] = event_counts.get(event["event_type"], 0) + 1
+        max_severity = "low"
+        if events:
+            max_severity = max(events, key=lambda event: severity_rank[event["severity"]])["severity"]
+
+        return {
+            "events": events[:10],
+            "event_counts": event_counts,
+            "high_impact_events": high_impact[:5],
+            "max_severity": max_severity,
+            "requires_followup": bool(high_impact),
+            "limitations": "基于新闻标题关键词识别，需结合公告原文确认事件真实性和影响范围。",
+        }
+
     def _get_random_int(self, min_val: int, max_val: int) -> int:
         """
         生成随机整数
@@ -420,6 +494,11 @@ class SentimentAgent(BaseAgent):
             Dict[str, Any]: 结构化的结果
         """
         result = self.get_result_template()
+        news_available = bool(news_data.get("recent_news") or news_data.get("news_items"))
+        market_available = market_sentiment.get("data_available", True) is not False
+        data_available = bool(news_available or market_available)
+        data_note = "" if data_available else "新闻/社交媒体/市场情绪数据暂不可用，情绪结论主要依赖有限输入。"
+        data_quality_level = "verified" if news_available else ("partial" if data_available else "unavailable")
         result.update({
             "stock_code": stock_code,
             "analysis_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -431,10 +510,15 @@ class SentimentAgent(BaseAgent):
             "risk_signals": llm_analysis.get("risk_signals", []),
             "sentiment_drivers": llm_analysis.get("sentiment_drivers", []),
             "confidence_score": llm_analysis.get("confidence_score", 0.85),
+            "data_available": data_available,
+            "data_note": data_note,
+            "data_quality_level": data_quality_level,
+            "is_simulated": bool(stock_info.get("is_simulated") or news_data.get("is_simulated")),
             "sentiment_metrics": {
                 "news_sentiment": news_data.get("sentiment_overview", {}),
                 "market_sentiment": market_sentiment.get("fear_greed_index", {})
-            }
+            },
+            "event_analysis": news_data.get("event_analysis", {}),
         })
 
         # 验证结果

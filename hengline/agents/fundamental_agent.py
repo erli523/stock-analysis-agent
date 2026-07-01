@@ -150,6 +150,10 @@ class FundamentalAgent(BaseAgent):
                 "ps_ratio": _first_number(stock_info.get("ps_ratio"), report_valuation.get("ps_ratio")),
                 "peg_ratio": _first_number(stock_info.get("peg_ratio"), report_valuation.get("peg_ratio")),
             }
+            financial_data["valuation_comparison"] = self._build_valuation_comparison(
+                financial_data["company_info"],
+                financial_data["valuation_metrics"],
+            )
             
             # 财务报表数据
             financial_data["balance_sheet"] = financial_reports.get("balance_sheet", {})
@@ -373,6 +377,14 @@ class FundamentalAgent(BaseAgent):
             Dict[str, Any]: 结构化的结果
         """
         result = self.get_result_template()
+        data_available = financial_data.get("data_available", True)
+        is_simulated = bool(financial_data.get("is_simulated") or financial_data.get("__metadata__", {}).get("is_simulated"))
+        data_quality_level = (
+            "simulated" if is_simulated else
+            "unavailable" if data_available is False else
+            "partial" if financial_data.get("data_note") else
+            "verified"
+        )
         result.update({
             "stock_code": stock_code,
             "analysis_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -385,13 +397,18 @@ class FundamentalAgent(BaseAgent):
             "risk_factors": llm_analysis.get("risk_factors", []),
             "investment_implications": llm_analysis.get("investment_implications", []),
             "confidence_score": llm_analysis.get("confidence_score", 0.85),
+            "data_available": data_available,
+            "data_note": financial_data.get("data_note", ""),
+            "data_quality_level": data_quality_level,
+            "is_simulated": is_simulated,
             "financial_summary": {
                 "pe_ratio": financial_data["financial_ratios"].get("pe_ratio", 0),
                 "pb_ratio": financial_data["financial_ratios"].get("pb_ratio", 0),
                 "market_cap": financial_data["valuation_metrics"].get("market_cap", 0),
                 "revenue": financial_data["income_statement"].get("total_revenue", 0),
                 "net_income": financial_data["income_statement"].get("net_income", 0)
-            }
+            },
+            "valuation_comparison": financial_data.get("valuation_comparison", {}),
         })
 
         # 验证结果
@@ -400,4 +417,103 @@ class FundamentalAgent(BaseAgent):
             result = self.get_result_template()
 
         return result
+
+    def _build_valuation_comparison(
+        self,
+        company_info: Dict[str, Any],
+        valuation_metrics: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Compare PE/PB/PS against coarse industry reference bands."""
+        def _num(value: Any, default: float = 0.0) -> float:
+            try:
+                number = float(value)
+                return number if pd.notna(number) else default
+            except (TypeError, ValueError):
+                return default
+
+        industry_text = " ".join(str(company_info.get(key, "")) for key in ("sector", "industry"))
+        profiles = [
+            {
+                "name": "科技成长",
+                "keywords": ["电子", "通信", "计算机", "软件", "半导体", "人工智能", "云"],
+                "pe": (20, 35, 55),
+                "pb": (2.0, 4.0, 7.0),
+                "ps": (2.0, 5.0, 10.0),
+            },
+            {
+                "name": "先进制造",
+                "keywords": ["制造", "设备", "新能源", "汽车", "机械", "电气"],
+                "pe": (15, 25, 40),
+                "pb": (1.5, 3.0, 5.0),
+                "ps": (1.0, 3.0, 6.0),
+            },
+            {
+                "name": "消费医药",
+                "keywords": ["消费", "食品", "医药", "医疗", "生物"],
+                "pe": (18, 32, 50),
+                "pb": (2.0, 4.5, 8.0),
+                "ps": (2.0, 5.0, 9.0),
+            },
+        ]
+        profile = next(
+            (item for item in profiles if any(keyword in industry_text for keyword in item["keywords"])),
+            {
+                "name": "全市场参考",
+                "keywords": [],
+                "pe": (12, 22, 35),
+                "pb": (1.2, 2.5, 4.5),
+                "ps": (1.0, 2.5, 5.0),
+            },
+        )
+
+        def _assess(metric_name: str, value: float) -> Dict[str, Any]:
+            low, median, high = profile[metric_name]
+            if value <= 0:
+                bucket = "unavailable"
+                percentile = None
+                note = "当前数据源未返回有效估值指标。"
+            elif value <= low:
+                bucket = "low"
+                percentile = 25
+                note = "低于行业参考低位，需结合盈利质量确认是否低估。"
+            elif value <= median:
+                bucket = "reasonable"
+                percentile = 50
+                note = "接近行业参考中枢。"
+            elif value <= high:
+                bucket = "elevated"
+                percentile = 75
+                note = "高于行业参考中枢，需匹配成长性。"
+            else:
+                bucket = "expensive"
+                percentile = 90
+                note = "显著高于行业参考高位，估值容错率偏低。"
+            return {
+                "value": value,
+                "reference_band": {"low": low, "median": median, "high": high},
+                "bucket": bucket,
+                "approx_percentile": percentile,
+                "note": note,
+            }
+
+        comparison = {
+            "profile": profile["name"],
+            "method": "static_industry_reference_band",
+            "limitations": "当前为行业粗粒度参考区间；接入同业样本池后可升级为实时分位数。",
+            "metrics": {
+                "pe": _assess("pe", _num(valuation_metrics.get("pe_ratio"))),
+                "pb": _assess("pb", _num(valuation_metrics.get("pb_ratio"))),
+                "ps": _assess("ps", _num(valuation_metrics.get("ps_ratio"))),
+            },
+        }
+        expensive_count = sum(
+            1 for item in comparison["metrics"].values()
+            if item["bucket"] in {"elevated", "expensive"}
+        )
+        comparison["valuation_risk"] = (
+            "high" if expensive_count >= 2 else
+            "medium" if expensive_count == 1 else
+            "low"
+        )
+        return comparison
 

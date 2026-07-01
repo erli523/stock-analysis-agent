@@ -99,6 +99,25 @@ class ProductFeatureHelperTests(unittest.TestCase):
         self.assertEqual(rows[0]["状态"], "触发")
         self.assertEqual(rows[0]["最新价"], 12.5)
 
+    def test_moving_average_backtest_includes_costs_and_risk_metrics(self):
+        dates = pd.date_range("2026-01-01", periods=90, freq="B")
+        closes = [100 + i * 0.4 for i in range(90)]
+        price_data = pd.DataFrame({"Date": dates, "Close": closes})
+
+        result = features.compute_moving_average_backtest(
+            price_data,
+            fast=5,
+            slow=20,
+            fee_bps=5,
+            slippage_bps=5,
+        )
+
+        self.assertTrue(result["success"])
+        self.assertIn("max_drawdown_pct", result["metrics"])
+        self.assertIn("sharpe", result["metrics"])
+        self.assertEqual(result["assumptions"]["fee_bps"], 5)
+        self.assertEqual(result["assumptions"]["limit_up_down"], "not_modeled")
+
     def test_markdown_report_contains_recommendation_and_findings(self):
         result = {
             "success": True,

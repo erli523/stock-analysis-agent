@@ -590,6 +590,68 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def compute_moving_average_backtest(
+    price_data: pd.DataFrame,
+    fast: int,
+    slow: int,
+    fee_bps: float = 5.0,
+    slippage_bps: float = 5.0,
+) -> Dict[str, Any]:
+    """Run a moving-average crossover backtest with trading frictions."""
+    if price_data.empty or len(price_data) < max(60, slow + 5):
+        return {"success": False, "error": "not_enough_data"}
+    if fast >= slow:
+        return {"success": False, "error": "fast_must_be_less_than_slow"}
+
+    data = price_data.copy().sort_values("Date")
+    close = pd.to_numeric(data["Close"], errors="coerce")
+    returns = close.pct_change().fillna(0)
+    data["fast_ma"] = close.rolling(fast).mean()
+    data["slow_ma"] = close.rolling(slow).mean()
+    data["signal"] = (data["fast_ma"] > data["slow_ma"]).astype(int)
+    data.loc[data["fast_ma"].isna() | data["slow_ma"].isna(), "signal"] = 0
+    data["position"] = data["signal"].shift(1).fillna(0)
+    trade_turnover = data["position"].diff().abs().fillna(data["position"].abs())
+    cost_rate = (fee_bps + slippage_bps) / 10000
+    data["strategy_return"] = data["position"] * returns - trade_turnover * cost_rate
+    data["buy_hold_curve"] = (1 + returns).cumprod()
+    data["strategy_curve"] = (1 + data["strategy_return"]).cumprod()
+
+    trades = int((data["signal"].diff().abs() == 1).sum())
+    equity = data["strategy_curve"]
+    drawdown = equity / equity.cummax() - 1
+    daily_strategy = data["strategy_return"].dropna()
+    annualized_vol = float(daily_strategy.std() * (252 ** 0.5)) if not daily_strategy.empty else 0.0
+    sharpe = float(daily_strategy.mean() / daily_strategy.std() * (252 ** 0.5)) if daily_strategy.std() else 0.0
+    trade_returns = daily_strategy[data["position"] > 0]
+    win_rate = float((trade_returns > 0).mean()) if not trade_returns.empty else 0.0
+
+    return {
+        "success": True,
+        "data": data,
+        "metrics": {
+            "strategy_return_pct": (float(data["strategy_curve"].iloc[-1]) - 1) * 100,
+            "buy_hold_return_pct": (float(data["buy_hold_curve"].iloc[-1]) - 1) * 100,
+            "excess_return_pct": (float(data["strategy_curve"].iloc[-1] / data["buy_hold_curve"].iloc[-1]) - 1) * 100,
+            "max_drawdown_pct": float(drawdown.min()) * 100,
+            "annualized_volatility_pct": annualized_vol * 100,
+            "sharpe": sharpe,
+            "win_rate_pct": win_rate * 100,
+            "trades": trades,
+            "fee_bps": fee_bps,
+            "slippage_bps": slippage_bps,
+        },
+        "assumptions": {
+            "execution": "next_day_signal_execution",
+            "fee_bps": fee_bps,
+            "slippage_bps": slippage_bps,
+            "limit_up_down": "not_modeled",
+            "suspension": "not_modeled",
+            "adjustment": "uses_input_price_adjustment",
+        },
+    }
+
+
 def render_backtest_page(ticker: str, price_data: pd.DataFrame) -> None:
     st.markdown("### 简化回测")
     st.caption("当前版本提供均线交叉策略回测，用来快速验证技术信号是否具备历史解释力。")
@@ -619,6 +681,18 @@ def render_backtest_page(ticker: str, price_data: pd.DataFrame) -> None:
     c1.metric("策略收益", f"{total_strategy:+.2f}%")
     c2.metric("买入持有", f"{total_hold:+.2f}%")
     c3.metric("交易次数", str(trades))
+
+    enhanced_backtest = compute_moving_average_backtest(price_data, fast, slow)
+    if enhanced_backtest.get("success"):
+        data = enhanced_backtest["data"]
+        metrics = enhanced_backtest["metrics"]
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("含成本收益", f"{metrics['strategy_return_pct']:+.2f}%")
+        r2.metric("最大回撤", f"{metrics['max_drawdown_pct']:.2f}%")
+        r3.metric("夏普比率", f"{metrics['sharpe']:.2f}")
+        r4.metric("胜率", f"{metrics['win_rate_pct']:.2f}%")
+        with st.expander("回测假设", expanded=False):
+            st.write(enhanced_backtest["assumptions"])
 
     date_strs = pd.to_datetime(data["Date"]).dt.strftime("%Y-%m-%d").tolist()
     fig = go.Figure()

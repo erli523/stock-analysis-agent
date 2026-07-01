@@ -22,7 +22,7 @@
 | 特性 | 说明 |
 |------|------|
 | 🧠 **多 Agent 并行** | LangGraph 编排 6 个专业 Agent + 1 首席策略 Agent，采用 fan-out/fan-in 工作流：专业 Agent 并行执行，ConflictAnalyzer 汇合，再交给首席策略 Agent 综合研判 |
-| 🔁 **Reflection Loop** | Agent 输出结构校验失败时自动携带错误原因重试（最多 2 次），大幅降低 JSON 解析失败率 |
+| 🔁 **Reflection Loop** | Agent 输出结构校验失败时自动携带错误原因重试（最多 2 次），并通过图级质量门对失败/缺失/低置信 Agent 触发条件重跑 |
 | ⚖️ **冲突检测** | 独立的 ConflictAnalyzer 节点量化各 Agent 评分分歧、数据缺口，供首席策略参考 |
 | ⏱️ **差异化超时** | 每个 Agent 独立超时（可用环境变量覆盖），慢维度不拖累整体、快维度不浪费等待 |
 | 👑 **加权综合研判** | 首席策略 Agent 按维度权重融合评分，输出 5 档投资建议 + 5 档风险等级 + 仓位与风险缓解建议 |
@@ -93,10 +93,10 @@ flowchart TD
 
 | Agent | 角色 | 6 个分析维度 | 关键数据 / 计算 | 贡献首席的评分字段 | 权重 |
 |-------|------|-------------|----------------|-------------------|:----:|
-| **FundamentalAgent** | 基本面 | 财务健康 · 盈利 · 成长 · 估值 · 竞争优势 · 管理质量 | 财报 + 估值指标 | `overall_score`（0-10 → 0-100） | **0.25** |
+| **FundamentalAgent** | 基本面 | 财务健康 · 盈利 · 成长 · 估值 · 行业可比估值 · 竞争优势 · 管理质量 | 财报 + 估值指标 | `overall_score`（0-10 → 0-100） | **0.25** |
 | **TechnicalAgent** | 技术面 | 趋势 · 动量 · 量价 · 波动率 · 形态 · 支撑阻力 | `ta` 库计算 MA50/200、MACD、RSI、布林带、OBV、量比 | `signal_strength` 七档映射 | **0.20** |
 | **IndustryMacroAgent** | 行业宏观 | 行业前景 · 宏观经济 · 政策 · 竞争格局 · 行业周期 · 市场趋势 | 行业 ETF 表现 + 宏观环境 | `industry_score` 与 `economic_score` 均值 | **0.15** |
-| **SentimentAgent** | 情绪 | 新闻 · 社媒 · 投资者 · 市场 · 情绪趋势 · 事件影响 | 新闻数据 + 情感词分类 | `news_sentiment` 正向占比 | **0.15** |
+| **SentimentAgent** | 情绪 | 新闻 · 社媒 · 投资者 · 市场 · 情绪趋势 · 事件驱动分析 | 新闻数据 + 事件分类 + 情感词分类 | `news_sentiment` 正向占比 | **0.15** |
 | **FundFlowAgent** | 资金流 | 机构持仓 · 大股东变动 · 资金流向 · 量能 · 内部交易 · 外资 | 成交量 + 资金流分类（默认 3 个月） | `flow_classification` 七档映射 | **0.15** |
 | **ESGRiskAgent** | ESG 风险 | 环境 · 社会 · 治理 · 争议 · 风险评估 · 可持续 | ESG 维度指标 | `esg_metrics.overall_score` | **0.10** |
 | **ChiefStrategyAgent** | 首席策略 | 综合研判 · 风险评估 · 关键因子识别 | 加权融合 + 冲突分析上下文 | 输出最终建议（不参与评分） | — |
@@ -107,6 +107,8 @@ flowchart TD
 - **风险等级（5 档）**：低风险 · 中低风险 · 中等风险 · 中高风险 · 高风险
 - **综合指标**：加权综合评分 `composite_score`、风险分 `risk_score`、参与维度列表
 - **可执行建议**：仓位建议、关键监控指标、风险披露、风险缓解措施、各维度贡献摘要
+- **质量护栏**：数据质量等级 `data_quality`、建议降级原因 `guardrail_notes`、短/中/长期限说明 `analysis_horizon`、人工复核 `human_review` 与合规提示
+- **仓位与失效边界**：确定性仓位区间 `position_plan`、止损/止盈复核参数、反向风险与结论失效条件 `decision_boundaries`
 
 **⚙️ 工作流执行细节：**
 
@@ -115,17 +117,21 @@ flowchart TD
 | **并发控制** | `asyncio.Semaphore(AGENT_LLM_CONCURRENCY)` | 默认最多 3 个 Agent 同时调用 LLM，防止 API 限流；可用环境变量调整 |
 | **差异化超时** | `AGENT_TIMEOUTS` | 基本面 120s / 技术 · 行业 90s / 情绪 · 资金流 60s / ESG 45s / 首席 120s，均可用 `*_TIMEOUT` 环境变量覆盖 |
 | **评分归一化** | `_compute_agent_score` | 冲突检测节点把 6 个 Agent 的异构输出统一映射到 0-100，用于分歧检测与共识判断 |
-| **按需运行** | `enabled_agents` | UI 勾选或 CLI `--agents` 指定后，只构建/运行选中的专业 Agent |
+| **条件路由 / 按需运行** | `agent_router` + `enabled_agents` / `analysis_focus` / `question` | LangGraph 先进入路由节点，再按显式选择或问题关键词条件分发到相关专业 Agent；UI 勾选和 CLI `--agents` 仍保持兼容 |
 | **失败隔离** | `_generate_analysis_report` | 单个 Agent 失败仅跳过该维度并在 UI 标注，不影响其余维度与最终汇总 |
 | **拓扑诊断** | `workflow_metadata.topology` | 最终报告返回实际节点、边、reducer 和当前边界，UI 可展开查看 LangGraph 执行链路 |
 | **节点轨迹** | `workflow_trace` | 每个专业 Agent、ConflictAnalyzer、ChiefStrategyAgent 完成时写入 trace，便于定位超时、失败和重试次数 |
+| **数据质量护栏** | `data_quality_level` / `guardrail_notes` | 模拟、估算、不可用或失败维度会进入冲突检测和首席策略护栏，自动降低建议强度与置信度 |
+| **图级质量门** | `agent_quality_gate` | 专业 Agent 并行完成后统一检查缺失、失败、低置信、模拟/不可用数据；可通过条件边回到 router 重跑失败维度 |
+| **可选 Checkpoint** | `LANGGRAPH_CHECKPOINTS_ENABLED` / `LANGGRAPH_CHECKPOINT_BACKEND` | 默认关闭；支持 `memory`，也可请求 `sqlite` + `LANGGRAPH_CHECKPOINT_PATH` 持久化，缺少 SQLite saver 依赖时自动回退 MemorySaver |
+| **事件流接口** | `/api/analyze/stream` | 基于 LangGraph `astream_events()` 输出标准化节点事件，并通过 FastAPI SSE 返回实时状态 |
 
 **当前 LangGraph 实现边界：**
 
-- 已使用 `StateGraph`、`START`/`END`、并行 fan-out、fan-in 汇合节点，以及 `Annotated` reducer 合并并行状态。
-- Reflection Loop 目前在每个节点内部完成，而不是用 LangGraph 条件边建成显式循环；这样实现更简单，也方便保持每个 Agent 的 prompt 修正上下文。
-- 当前 UI/API 返回最终报告与节点轨迹，尚未接入 LangGraph 事件流式输出。
-- 当前没有配置持久化 checkpointer，因此工作流失败后不能从中间节点恢复；后续可接入 `MemorySaver` 或数据库 checkpointer 做断点续跑。
+- 已使用 `StateGraph`、`START`/`END`、`agent_router` 条件路由、并行 fan-out、fan-in 汇合节点，以及 `Annotated` reducer 合并并行状态。
+- Reflection Loop 分为两层：单 Agent 节点内保留 prompt 修正重试；图级 `agent_quality_gate` 通过条件边对失败、缺失或低置信 Agent 发起一次可追踪重跑。
+- 协调器已提供 LangGraph 事件流接口，FastAPI 暴露 `/api/analyze/stream` SSE；当前 Streamlit UI 默认仍返回最终报告，尚未消费实时 SSE。
+- 可通过 `LANGGRAPH_CHECKPOINTS_ENABLED=true` 或 `enable_checkpointing=True` 启用 checkpoint；`LANGGRAPH_CHECKPOINT_BACKEND=sqlite` 会尝试使用 `data/checkpoints/langgraph.sqlite`，当前环境未安装 `langgraph-checkpoint-sqlite` 时会自动降级为内存 checkpoint。
 
 ---
 
@@ -256,16 +262,17 @@ mindmap
 |------|------|------|
 | v1 | Map-Reduce | 6 个 Agent 并行执行，直接汇总给首席策略，无容错、无重试 |
 | v2 | + Bug 修复 | 修复 RAG 检索空片段、Streamlit 单例缓存、评分字段错位、随机数据造假等问题 |
-| v3（当前） | **LangGraph fan-out/fan-in + Reflection Loop** | `StateGraph` 并行分发到专业 Agent，使用 reducer 合并结果与执行轨迹，ConflictAnalyzer 汇合后交给首席策略 Agent；每个 Agent 内置"执行 → 校验 → 重试"闭环 |
+| v3（当前） | **LangGraph agent_router 条件路由 + fan-out/fan-in + 图级质量门 + Reflection Loop** | `StateGraph` 先由 `agent_router` 根据 `enabled_agents`、`analysis_focus` 或 `question` 选择专业 Agent，再并行分发；`agent_quality_gate` 检查失败/缺失/低置信输出并可条件重跑，ConflictAnalyzer 汇合后交给首席策略 Agent；每个 Agent 仍保留"执行 → 校验 → 重试"闭环 |
 
 **核心收益：**
 
 - ✅ Agent 输出结构异常时自动重试并携带错误上下文，而非直接降级为默认值
 - ✅ 首席策略 Agent 不再"假装各维度一致"，能明确指出评分分歧和数据缺口
+- ✅ 模拟、估算、不可用或失败维度会触发数据质量护栏，避免在低质量数据下输出过强买入建议
 - ✅ 各 Agent 差异化超时（基本面 120s / ESG 45s），避免慢 Agent 拖累整体或快 Agent 超时浪费
 - ✅ 6 个 Agent 共享一个 `StockDataManager` 实例，避免重复拉取同一股票数据
 
-详见 `hengline/agents/agent_coordinator.py`（`REFLECTION_MAX_RETRIES`、`_create_conflict_analyzer_node`、`get_workflow_topology`、`workflow_trace`）与 `test/test_reflection_loop.py`（Reflection、冲突检测、LangGraph 拓扑验收测试）。
+详见 `hengline/agents/agent_coordinator.py`（`REFLECTION_MAX_RETRIES`、`QUALITY_GATE_MAX_RETRIES`、`_create_quality_gate_node`、`_create_conflict_analyzer_node`、`get_workflow_topology`、`workflow_trace`）、`hengline/agents/chief_strategy_agent.py`（数据质量评分与建议护栏）与 `test/test_reflection_loop.py`（Reflection、质量门、冲突检测、LangGraph 拓扑验收测试）。
 
 ### 代码质量与可维护性
 
@@ -278,7 +285,7 @@ mindmap
 | `hengline/streamlit/st_main.py` | 页面 CSS 抽取为 `APP_CSS` 常量；`_category_axis` 统一 K线/技术/对比图的交易日压缩逻辑；拆分 `show_financial_export`、`show_agent_analysis`、`show_technical` |
 | `hengline/streamlit/st_product_features.py` | 拆分 `render_financial_visuals`（趋势/雷达）与 `render_screener_page`（代码解析/单股筛选） |
 
-重构后全部 **80 项单元测试通过**（`test_agent_fixes` 38 + `test_reflection_loop` 35 + `test_streamlit_product_features` 6 + `test_vector_store` 1），并用 `300502` 在 Streamlit 界面完成概览/技术分析等视图实测验证。
+重构后全部 **104 项单元测试通过**（`test_agent_fixes` 47 + `test_reflection_loop` 49 + `test_streamlit_product_features` 7 + `test_vector_store` 1），并用 `300502` 在 Streamlit 界面完成概览/技术分析等视图实测验证。
 
 ---
 
@@ -320,12 +327,12 @@ mindmap
 | **K 线行情** | K 线 + 成交量（非交易日压缩）、市场简报、日收益分布直方图、行情 CSV 导出 |
 | **技术分析** | MA5/20/60 均线、技术面解读卡片、技术结论文案、MACD/RSI/布林带高级图表 |
 | **财务数据** | 利润表趋势图、财务/估值雷达图、7 类财务表分组展示、逐表 CSV 下载、模拟财务数据警告 |
-| **智能体分析** | 按需勾选 Agent 维度、智能体记忆开关、LangGraph 工作流、执行状态表（✅/❌）、工作流诊断（共识/分歧/数据缺口）、各 Agent 明细 Tab、首席策略建议、Markdown/HTML/JSON 报告导出、对话式追问 |
+| **智能体分析** | 按需勾选 Agent 维度、智能体记忆开关、LangGraph 工作流、质量门重试、执行状态表（✅/❌）、工作流诊断（共识/分歧/数据缺口）、各 Agent 明细 Tab、首席策略建议、Markdown/HTML/JSON 报告导出、对话式追问 |
 | **知识库问答** | 独立 RAG 问答（需手动初始化）、示例问题、检索数量 slider、参考来源展示、问答历史 |
 | **自选股** | 列表管理、删除、跳转分析 |
 | **历史分析** | 读取 `data/output/{code}/analysis_*.json`、筛选、详情、再次导出报告 |
 | **股票筛选** | 候选池输入、PE/PB/涨跌幅/MA20 条件、进度条、结果表格 |
-| **策略回测** | 可调短/长均线、收益曲线、买入持有基准、交易次数 metric |
+| **策略回测** | 可调短/长均线、含手续费/滑点的收益曲线、买入持有基准、最大回撤、夏普比率、胜率、交易次数与回测假设 |
 | **投资组合** | 本地持仓录入（含备注）、删除、组合总市值/浮动盈亏汇总 |
 | **预警配置** | 价格上下限、启用/禁用、手动检查触发状态 |
 
@@ -334,9 +341,11 @@ mindmap
 | 功能 | 说明 |
 |------|------|
 | 6 专业 + 1 首席 Agent | 见上文「Agent 能力矩阵」 |
-| Reflection Loop | 输出校验失败自动重试（≤2 次），错误注入 Prompt |
+| Reflection Loop | 节点内输出校验失败自动重试（≤2 次），错误注入 Prompt；图级质量门可对失败/缺失/低置信 Agent 条件重跑 |
 | ConflictAnalyzer | 纯 Python 评分分歧/数据缺口/共识检测 |
-| 按需运行 | UI multiselect 或 CLI/API `enabled_agents` |
+| 行业可比估值 | 基本面 Agent 输出 PE/PB/PS 行业参考区间、估值分档与估值风险 |
+| 事件驱动分析 | 情绪 Agent 对业绩、分红回购、股东变动、监管、业务与政策事件做分类和严重度标记 |
+| 按需运行 | UI multiselect、CLI/API `enabled_agents`，或 API `analysis_focus` / `question` 自动路由 |
 | 智能体记忆 | 可选 FAISS VectorStoreRetrieverMemory（`enable_memory`） |
 | 共享取数 | 7 个 Agent 注入同一 `StockDataManager` |
 | 并发 / 超时 | `AGENT_LLM_CONCURRENCY` + 各 Agent 独立 `*_TIMEOUT` |
@@ -587,14 +596,17 @@ curl -X POST http://localhost:8000/api/analyze \
 ```bash
 conda activate stock-agent
 
-# Agent 修复 + Reflection Loop / 冲突分析（38 + 31 用例）
-cd test && python -m unittest test_agent_fixes test_reflection_loop -v
+# Agent 修复 + Reflection Loop / 质量门 / 冲突分析（47 + 49 用例）
+python -m pytest test/test_agent_fixes.py test/test_reflection_loop.py -q
 
-# 产品功能 helper 测试（6 用例）
-python test/test_streamlit_product_features.py
+# 产品功能 helper 测试（7 用例）
+python -m pytest test/test_streamlit_product_features.py -q
 
 # 向量存储测试（1 用例，需 llama_index 环境）
-python test/test_vector_store.py
+python -m pytest test/test_vector_store.py -q
+
+# 当前核心回归套件（104 用例）
+python -m pytest test/test_agent_fixes.py test/test_reflection_loop.py test/test_streamlit_product_features.py test/test_vector_store.py -q
 
 # 关键文件语法检查
 python -m py_compile main.py app/application.py hengline/streamlit/st_main.py hengline/streamlit/st_product_features.py hengline/agents/agent_coordinator.py hengline/agents/base_agent.py
@@ -625,7 +637,7 @@ stock-analysis-agent/
 ├── config/              # config.json 与环境变量映射
 ├── app/                 # FastAPI 应用入口（application.py）
 ├── api/                 # REST 路由（/api/analyze 等）
-├── test/                # 单元测试（共 76 用例）
+├── test/                # 单元测试（核心回归 104 用例）
 ├── build_rag_index.py   # Agent 知识库索引构建
 ├── install.bat          # Windows 安装脚本
 ├── start.bat            # Windows 启动脚本

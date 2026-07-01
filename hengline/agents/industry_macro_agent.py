@@ -367,6 +367,10 @@ class IndustryMacroAgent(BaseAgent):
         else:
             derived_macro_score = _clamp_score(llm_analysis.get("economic_score"), 50.0)
 
+        has_quant_data = bool(sector_performance or major_indices)
+        data_available = bool(has_quant_data or llm_analysis.get("key_findings"))
+        data_note = "" if has_quant_data else "行业/宏观量化数据不足，结论主要依赖可用公司信息与LLM文本分析。"
+        data_quality_level = "verified" if has_quant_data else ("partial" if data_available else "unavailable")
         result = self.get_result_template()
         result.update({
             "stock_code": stock_code,
@@ -395,8 +399,10 @@ class IndustryMacroAgent(BaseAgent):
                 "key_macro_trends": macro_data.get("key_macro_trends", []),
                 "data_source": macro_data.get("data_source", ""),
             },
-            "data_available": bool(sector_performance or major_indices or llm_analysis.get("key_findings")),
-            "data_note": "" if (sector_performance or major_indices) else "行业/宏观量化数据不足，结论主要依赖可用公司信息与LLM文本分析。",
+            "data_available": data_available,
+            "data_note": data_note,
+            "data_quality_level": data_quality_level,
+            "is_simulated": bool(stock_info.get("is_simulated") or industry_data.get("is_simulated") or macro_data.get("is_simulated")),
             "industry_summary": {
                 "sector_performance": industry_data.get("sector_performance", {}),
                 "market_sentiment": macro_data.get("market_sentiment", {})

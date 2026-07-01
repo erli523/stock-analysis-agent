@@ -97,6 +97,9 @@ class ChiefStrategyAgent(BaseAgent):
             
             # 验证并过滤有效结果
             filtered_results = self._filter_valid_results(agent_results)
+
+            # 评估数据质量，后续用于降低置信度和限制过强建议
+            data_quality = self._assess_data_quality(filtered_results, agent_results, conflict_analysis or {})
             
             # 计算综合评分
             composite_score = self._calculate_composite_score(filtered_results)
@@ -114,7 +117,8 @@ class ChiefStrategyAgent(BaseAgent):
             prompt = self._generate_analysis_prompt(
                 stock_code, filtered_results, composite_score,
                 overall_risk, key_strengths, key_risks,
-                conflict_analysis=conflict_analysis
+                conflict_analysis=conflict_analysis,
+                data_quality=data_quality,
             )
             
             # 使用LLM生成综合分析
@@ -123,7 +127,7 @@ class ChiefStrategyAgent(BaseAgent):
             # 结构化最终结果
             result = self._structure_result(
                 stock_code, llm_analysis, filtered_results, 
-                composite_score, overall_risk
+                composite_score, overall_risk, data_quality, conflict_analysis
             )
             
             debug(f"首席策略官完成股票 {stock_code} 的综合分析")
@@ -165,6 +169,86 @@ class ChiefStrategyAgent(BaseAgent):
                 warning(f"跳过 {agent_name} 的分析结果，原因: {result.error_message or '无效结果'}")
         
         return filtered
+
+    @staticmethod
+    def _is_simulated_result(result: Dict[str, Any]) -> bool:
+        """Return True when an agent result is based on mock/simulated data."""
+        if not isinstance(result, dict):
+            return False
+        if result.get("is_simulated") is True:
+            return True
+        if str(result.get("data_source", "")).lower() == "mock":
+            return True
+        if str(result.get("data_quality_level", "")).lower() == "simulated":
+            return True
+        return any(
+            isinstance(value, dict) and ChiefStrategyAgent._is_simulated_result(value)
+            for value in result.values()
+        )
+
+    def _assess_data_quality(
+        self,
+        filtered_results: Dict[str, Dict[str, Any]],
+        agent_results: Dict[str, AgentResult],
+        conflict_analysis: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Summarize data reliability across successful, failed, and simulated agents."""
+        failed_agents = list(conflict_analysis.get("failed_agents") or [])
+        for agent_name, result in agent_results.items():
+            if not result.success and agent_name not in failed_agents:
+                failed_agents.append(agent_name)
+
+        simulated_agents: List[str] = []
+        unavailable_agents: List[str] = []
+        partial_agents: List[str] = []
+        notes: List[str] = []
+
+        for agent_name, result in filtered_results.items():
+            quality_level = str(result.get("data_quality_level", "")).lower()
+            if self._is_simulated_result(result):
+                simulated_agents.append(agent_name)
+            if result.get("data_available") is False or quality_level == "unavailable":
+                unavailable_agents.append(agent_name)
+            elif result.get("data_note") or quality_level in {"partial", "estimated"}:
+                partial_agents.append(agent_name)
+            if result.get("data_note"):
+                notes.append(f"{agent_name}: {str(result.get('data_note'))[:120]}")
+
+        data_gaps = list(conflict_analysis.get("data_gaps") or [])
+        score = 100
+        score -= 30 * len(simulated_agents)
+        score -= 20 * len(unavailable_agents)
+        score -= 10 * len(partial_agents)
+        score -= 15 * len(failed_agents)
+        score -= min(20, 5 * len(data_gaps))
+        score = max(0, min(100, score))
+
+        if simulated_agents:
+            level = "simulated"
+        elif unavailable_agents or failed_agents:
+            level = "limited"
+        elif partial_agents or data_gaps:
+            level = "partial"
+        else:
+            level = "verified"
+
+        return {
+            "level": level,
+            "score": score,
+            "simulated_agents": simulated_agents,
+            "unavailable_agents": unavailable_agents,
+            "partial_agents": partial_agents,
+            "failed_agents": failed_agents,
+            "data_gaps": data_gaps,
+            "notes": notes[:8],
+            "decision_policy": (
+                "模拟数据或关键维度缺失时，最终建议不得高于谨慎观望。"
+                if level in {"simulated", "limited"}
+                else "部分数据缺口时，限制强烈买入并降低置信度。"
+                if level == "partial"
+                else "数据质量正常。"
+            ),
+        }
     
     def _calculate_composite_score(self, filtered_results: Dict[str, Dict[str, Any]]) -> float:
         """
@@ -308,13 +392,13 @@ class ChiefStrategyAgent(BaseAgent):
                 # 基本面风险
                 financial_risk = result.get("financial_risks", [])
                 risk_factors.extend(financial_risk)
-                risk_scores.append(100 - result.get("fundamental_score", 50.0))
+                risk_scores.append(100 - self._extract_agent_score(agent_name, result))
                 
             elif agent_name == "TechnicalAgent":
                 # 技术面风险
                 technical_risks = result.get("risk_signals", [])
                 risk_factors.extend(technical_risks)
-                risk_scores.append(100 - result.get("technical_score", 50.0))
+                risk_scores.append(100 - self._extract_agent_score(agent_name, result))
                 
             elif agent_name == "ESGRiskAgent":
                 # ESG风险
@@ -412,7 +496,8 @@ class ChiefStrategyAgent(BaseAgent):
     def _generate_analysis_prompt(self, stock_code: str, filtered_results: Dict[str, Dict[str, Any]],
                                  composite_score: float, overall_risk: Dict[str, Any],
                                  key_strengths: List[str], key_risks: List[str],
-                                 conflict_analysis: Dict = None) -> str:
+                                 conflict_analysis: Dict = None,
+                                 data_quality: Dict[str, Any] = None) -> str:
         """
         生成综合分析提示词
         
@@ -480,11 +565,255 @@ class ChiefStrategyAgent(BaseAgent):
         if conflict_text:
             prompt += f"\n\n{conflict_text}\n\n请在最终建议中明确说明各维度的分歧和不确定性。"
 
+        if data_quality:
+            prompt += (
+                "\n\n[数据质量与合规约束]\n"
+                f"数据质量等级：{data_quality.get('level')}，评分：{data_quality.get('score')}/100。\n"
+                f"模拟数据维度：{data_quality.get('simulated_agents', [])}。\n"
+                f"不可用/失败维度：{data_quality.get('unavailable_agents', []) + data_quality.get('failed_agents', [])}。\n"
+                f"策略约束：{data_quality.get('decision_policy')}\n"
+                "如果数据质量不足，请降低建议强度、降低置信度，并明确说明结论仅供研究参考。"
+            )
+
         return prompt
+
+    @staticmethod
+    def _recommendation_rank(recommendation: str) -> int:
+        order = {
+            "卖出": 1,
+            "谨慎观望": 2,
+            "持有": 3,
+            "买入": 4,
+            "强烈买入": 5,
+        }
+        return order.get(recommendation, 3)
+
+    @staticmethod
+    def _cap_recommendation(recommendation: str, max_recommendation: str) -> str:
+        if ChiefStrategyAgent._recommendation_rank(recommendation) > ChiefStrategyAgent._recommendation_rank(max_recommendation):
+            return max_recommendation
+        return recommendation
+
+    def _apply_decision_guardrails(
+        self,
+        recommendation: str,
+        confidence_score: float,
+        key_findings: List[str],
+        risk_disclosure: str,
+        data_quality: Dict[str, Any],
+        overall_risk: Dict[str, Any],
+    ) -> Tuple[str, float, List[str], str, List[str]]:
+        """Apply deterministic investment-safety rules after LLM synthesis."""
+        guardrail_notes: List[str] = []
+        quality_level = (data_quality or {}).get("level", "verified")
+        capped = recommendation
+        confidence_cap = 0.90
+
+        if quality_level in {"simulated", "limited"}:
+            capped = self._cap_recommendation(capped, "谨慎观望")
+            confidence_cap = min(confidence_cap, 0.55)
+            guardrail_notes.append("数据质量不足或存在模拟/失败维度，系统已限制最终建议强度。")
+        elif quality_level == "partial":
+            capped = self._cap_recommendation(capped, "买入")
+            confidence_cap = min(confidence_cap, 0.70)
+            guardrail_notes.append("存在部分数据缺口，系统已降低建议置信度。")
+
+        risk_score = float((overall_risk or {}).get("risk_score", 50.0) or 50.0)
+        if risk_score >= 70:
+            capped = self._cap_recommendation(capped, "持有")
+            confidence_cap = min(confidence_cap, 0.65)
+            guardrail_notes.append("整体风险评分偏高，系统已限制买入类建议。")
+
+        confidence_score = max(0.0, min(float(confidence_score or 0.0), confidence_cap))
+        if capped != recommendation:
+            guardrail_notes.append(f"LLM 原始建议为“{recommendation}”，护栏调整为“{capped}”。")
+
+        if guardrail_notes:
+            key_findings = list(key_findings or [])
+            key_findings.extend(note for note in guardrail_notes if note not in key_findings)
+            extra = "；".join(guardrail_notes)
+            risk_disclosure = f"{risk_disclosure}；{extra}" if risk_disclosure else extra
+
+        return capped, confidence_score, key_findings, risk_disclosure, guardrail_notes
+
+    def _assess_human_review(
+        self,
+        recommendation: str,
+        confidence_score: float,
+        data_quality: Dict[str, Any],
+        overall_risk: Dict[str, Any],
+        guardrail_notes: List[str],
+    ) -> Dict[str, Any]:
+        """Decide whether the final recommendation should be reviewed by a human."""
+        reasons: List[str] = []
+        quality_level = (data_quality or {}).get("level", "verified")
+        risk_score = float((overall_risk or {}).get("risk_score", 50.0) or 50.0)
+
+        if recommendation in {"强烈买入", "买入", "卖出"} and float(confidence_score or 0.0) >= 0.75:
+            reasons.append("输出包含高强度买入/卖出建议且模型置信度较高。")
+        if quality_level in {"simulated", "limited", "partial"}:
+            reasons.append(f"数据质量等级为 {quality_level}，存在不可直接用于决策的数据边界。")
+        if risk_score >= 70:
+            reasons.append(f"整体风险评分为 {risk_score:.0f}，属于偏高风险区间。")
+        if guardrail_notes:
+            reasons.append("系统已触发投资建议护栏，需复核调整原因是否合理。")
+
+        required = bool(reasons)
+        return {
+            "required": required,
+            "review_level": "required" if required else "optional",
+            "reasons": reasons,
+            "policy": (
+                "需要人工复核后再用于任何真实交易或仓位决策。"
+                if required
+                else "未触发强制复核规则，但仍建议结合个人风险承受能力人工判断。"
+            ),
+        }
+
+    def _build_position_plan(
+        self,
+        recommendation: str,
+        confidence_score: float,
+        data_quality: Dict[str, Any],
+        overall_risk: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Build a deterministic position sizing plan from risk, quality, and signal strength."""
+        risk_score = float((overall_risk or {}).get("risk_score", 50.0) or 50.0)
+        quality_level = (data_quality or {}).get("level", "verified")
+        quality_score = float((data_quality or {}).get("score", 100) or 100)
+
+        base_ranges = {
+            "强烈买入": (0.15, 0.25),
+            "买入": (0.08, 0.15),
+            "持有": (0.03, 0.08),
+            "谨慎观望": (0.00, 0.03),
+            "卖出": (0.00, 0.00),
+        }
+        min_position, max_position = base_ranges.get(recommendation, (0.00, 0.05))
+
+        if risk_score >= 80:
+            risk_multiplier = 0.25
+        elif risk_score >= 65:
+            risk_multiplier = 0.50
+        elif risk_score >= 50:
+            risk_multiplier = 0.75
+        else:
+            risk_multiplier = 1.00
+
+        if quality_level in {"simulated", "limited"}:
+            quality_multiplier = 0.25
+        elif quality_level == "partial":
+            quality_multiplier = 0.60
+        else:
+            quality_multiplier = max(0.70, min(1.0, quality_score / 100))
+
+        confidence_multiplier = max(0.50, min(1.0, float(confidence_score or 0.0)))
+        multiplier = min(risk_multiplier, quality_multiplier) * confidence_multiplier
+        adjusted_min = round(min_position * multiplier, 4)
+        adjusted_max = round(max_position * multiplier, 4)
+
+        if recommendation == "卖出":
+            action = "reduce_or_exit"
+            entry_plan = "不建议新增仓位；已有仓位按风险承受能力分批减仓或退出。"
+        elif adjusted_max <= 0.03:
+            action = "watch_or_probe"
+            entry_plan = "仅适合观察或极小仓位试探，不建议一次性建仓。"
+        elif recommendation in {"强烈买入", "买入"}:
+            action = "scale_in"
+            entry_plan = "如需参与，建议分 2-3 批建仓，并等待量价与数据质量继续确认。"
+        else:
+            action = "hold_or_small_adjust"
+            entry_plan = "以持有和小幅调仓为主，避免在信息不完整时显著加仓。"
+
+        stop_loss_pct = 0.05 if risk_score >= 70 else 0.08 if risk_score >= 50 else 0.10
+        take_profit_pct = 0.12 if risk_score >= 70 else 0.18 if risk_score >= 50 else 0.25
+
+        return {
+            "action": action,
+            "suggested_position_range": {
+                "min_pct": adjusted_min,
+                "max_pct": adjusted_max,
+                "display": f"{adjusted_min * 100:.0f}%-{adjusted_max * 100:.0f}%",
+            },
+            "base_position_range": {
+                "min_pct": min_position,
+                "max_pct": max_position,
+            },
+            "risk_multiplier": round(risk_multiplier, 2),
+            "quality_multiplier": round(quality_multiplier, 2),
+            "confidence_multiplier": round(confidence_multiplier, 2),
+            "entry_plan": entry_plan,
+            "risk_controls": {
+                "stop_loss_pct": stop_loss_pct,
+                "take_profit_review_pct": take_profit_pct,
+                "max_single_stock_pct": adjusted_max,
+                "rebalance_trigger": "当数据质量、风险评分或主要 Agent 结论发生明显变化时重新评估。",
+            },
+            "notes": [
+                "仓位区间为研究辅助输出，不代表适合所有账户。",
+                "真实交易需结合个人资金规模、组合集中度、流动性和风险承受能力人工确认。",
+            ],
+        }
+
+    def _build_decision_boundaries(
+        self,
+        recommendation: str,
+        data_quality: Dict[str, Any],
+        overall_risk: Dict[str, Any],
+        conflict_analysis: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
+        """Create structured evidence gaps, invalidation conditions, and reverse risks."""
+        risk_level = (overall_risk or {}).get("risk_level", "中等风险")
+        risk_score = float((overall_risk or {}).get("risk_score", 50.0) or 50.0)
+        quality_level = (data_quality or {}).get("level", "verified")
+        conflict_analysis = conflict_analysis or {}
+
+        missing_data = []
+        for key in ("simulated_agents", "unavailable_agents", "partial_agents", "failed_agents", "data_gaps"):
+            items = (data_quality or {}).get(key) or []
+            if items:
+                missing_data.append({"type": key, "items": items})
+
+        invalidation_conditions = [
+            "后续核心数据源修复后，如果关键财务、行情或新闻数据与当前结论明显相反，应重新运行分析。",
+            "若主要技术趋势跌破关键均线或成交量异常放大且价格走弱，应重新评估短线结论。",
+            "若公告、财报、监管问询、减持或解禁事件改变基本面假设，应重新评估中长期结论。",
+        ]
+        if recommendation in {"强烈买入", "买入"}:
+            invalidation_conditions.append("如果综合评分下降到 60 以下或风险评分升至 70 以上，买入类结论失效。")
+        elif recommendation == "卖出":
+            invalidation_conditions.append("如果风险评分回落且多维度 Agent 重新形成偏多共识，卖出结论需复核。")
+
+        reverse_risks = [
+            f"当前整体风险等级为 {risk_level}，风险评分 {risk_score:.0f}。",
+            f"数据质量等级为 {quality_level}，该等级会影响结论可靠性。",
+        ]
+        if conflict_analysis.get("has_conflicts"):
+            reverse_risks.append("专业 Agent 之间存在明显分歧，最终建议需降低确定性。")
+        if missing_data:
+            reverse_risks.append("部分维度存在模拟、估算、不可用或失败数据，结论可能随数据修复而变化。")
+
+        return {
+            "evidence_quality": {
+                "level": quality_level,
+                "score": (data_quality or {}).get("score"),
+                "missing_or_limited_data": missing_data,
+            },
+            "reverse_risks": reverse_risks,
+            "invalidation_conditions": invalidation_conditions,
+            "recheck_triggers": [
+                "重大公告、财报或监管事件发布后",
+                "价格单日大幅波动或成交量异常放大后",
+                "数据源从模拟/估算切换为真实数据后",
+                "持仓比例接近建议上限或组合集中度明显升高时",
+            ],
+        }
     
     def _structure_result(self, stock_code: str, llm_analysis: Dict[str, Any],
                          filtered_results: Dict[str, Dict[str, Any]], composite_score: float,
-                         overall_risk: Dict[str, Any]) -> Dict[str, Any]:
+                         overall_risk: Dict[str, Any],
+                         data_quality: Dict[str, Any] = None,
+                         conflict_analysis: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         结构化最终结果
         
@@ -502,7 +831,6 @@ class ChiefStrategyAgent(BaseAgent):
         
         # 获取建议详情
         recommendation = llm_analysis.get("investment_recommendation", "持有")
-        recommendation_details = self.investment_recommendations.get(recommendation, {})
         key_findings = llm_analysis.get("key_findings", [])
         if not isinstance(key_findings, list):
             key_findings = [str(key_findings)]
@@ -512,6 +840,36 @@ class ChiefStrategyAgent(BaseAgent):
                 key_findings = [str(summary)]
             else:
                 key_findings = [f"综合评分 {composite_score:.2f}，最终建议为{recommendation}。"]
+        risk_disclosure = llm_analysis.get("risk_disclosure", "")
+        confidence_score = llm_analysis.get("confidence_score", 0.90)
+        recommendation, confidence_score, key_findings, risk_disclosure, guardrail_notes = self._apply_decision_guardrails(
+            recommendation,
+            confidence_score,
+            key_findings,
+            risk_disclosure,
+            data_quality or {},
+            overall_risk,
+        )
+        recommendation_details = self.investment_recommendations.get(recommendation, {})
+        human_review = self._assess_human_review(
+            recommendation,
+            confidence_score,
+            data_quality or {},
+            overall_risk,
+            guardrail_notes,
+        )
+        position_plan = self._build_position_plan(
+            recommendation,
+            confidence_score,
+            data_quality or {},
+            overall_risk,
+        )
+        decision_boundaries = self._build_decision_boundaries(
+            recommendation,
+            data_quality or {},
+            overall_risk,
+            conflict_analysis or {},
+        )
         
         result.update({
             "stock_code": stock_code,
@@ -524,15 +882,28 @@ class ChiefStrategyAgent(BaseAgent):
             "suitable_investors": llm_analysis.get("suitable_investors", ""),
             "position_suggestion": llm_analysis.get("position_suggestion", ""),
             "key_monitoring_metrics": llm_analysis.get("key_monitoring_metrics", []),
-            "risk_disclosure": llm_analysis.get("risk_disclosure", ""),
-            "confidence_score": llm_analysis.get("confidence_score", 0.90),
+            "risk_disclosure": risk_disclosure,
+            "confidence_score": confidence_score,
             "key_findings": key_findings,
             "analysis_summary": llm_analysis.get("analysis_summary", ""),
+            "analysis_horizon": {
+                "short_term": llm_analysis.get("short_term_outlook", "短线结论以技术面和成交量为主，需结合实时行情确认。"),
+                "medium_term": llm_analysis.get("medium_term_outlook", "中线结论需结合基本面、估值和行业景气度。"),
+                "long_term": llm_analysis.get("long_term_outlook", "长线结论应以财务质量、竞争力和行业周期为核心。"),
+            },
+            "data_quality": data_quality or {},
+            "guardrail_notes": guardrail_notes,
+            "human_review": human_review,
+            "position_plan": position_plan,
+            "decision_boundaries": decision_boundaries,
+            "compliance_disclaimer": "本系统输出仅供研究和学习参考，不构成任何投资建议或收益承诺。",
             "detailed_analysis": {
                 "recommendation_details": llm_analysis.get("recommendation_details", ""),
                 "suitable_investors": llm_analysis.get("suitable_investors", ""),
                 "position_suggestion": llm_analysis.get("position_suggestion", ""),
-                "risk_disclosure": llm_analysis.get("risk_disclosure", ""),
+                "risk_disclosure": risk_disclosure,
+                "position_plan": position_plan,
+                "decision_boundaries": decision_boundaries,
             },
             "comprehensive_metrics": {
                 "composite_score": round(composite_score, 2),

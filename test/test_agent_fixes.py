@@ -382,6 +382,32 @@ class TestP1_2_NoRandomData(unittest.TestCase):
             "fundamental_agent.py 中未找到 data_note 说明")
 
     # ── FundFlowAgent（OBV 相对变化率）────────────────────────────────
+    def test_fundamental_valuation_comparison_uses_industry_band(self):
+        from hengline.agents.fundamental_agent import FundamentalAgent
+
+        agent = object.__new__(FundamentalAgent)
+        comparison = agent._build_valuation_comparison(
+            {"sector": "电子", "industry": "通信设备"},
+            {"pe_ratio": 60, "pb_ratio": 8, "ps_ratio": 3},
+        )
+
+        self.assertEqual(comparison["profile"], "科技成长")
+        self.assertEqual(comparison["metrics"]["pe"]["bucket"], "expensive")
+        self.assertIn("valuation_risk", comparison)
+
+    def test_sentiment_event_analysis_classifies_high_impact_news(self):
+        from hengline.agents.sentiment_agent import SentimentAgent
+
+        agent = object.__new__(SentimentAgent)
+        result = agent._classify_event_impact([
+            {"title": "公司收到监管问询函", "sentiment": "negative", "publisher": "公告"},
+            {"title": "发布年度业绩预告", "sentiment": "positive", "publisher": "公告"},
+        ])
+
+        self.assertTrue(result["requires_followup"])
+        self.assertEqual(result["max_severity"], "high")
+        self.assertIn("regulatory", result["event_counts"])
+
     def test_fund_flow_obv_relative_threshold(self):
         """FundFlowAgent 应使用 OBV 相对变化率（%），不再与金额绝对值比较"""
         src = _src("fund_flow_agent.py")
@@ -575,6 +601,175 @@ class TestP2_2_UIFailureDisplay(unittest.TestCase):
 
 
 # ════════════════════════════════════════════════════════════════════════
+# P3  数据质量护栏与风险字段对齐
+# ════════════════════════════════════════════════════════════════════════
+class TestP3_ChiefDataQualityGuardrails(unittest.TestCase):
+    """验证首席策略不再基于缺失/模拟数据输出过强建议。"""
+
+    def _chief(self):
+        from hengline.agents.chief_strategy_agent import ChiefStrategyAgent
+
+        agent = object.__new__(ChiefStrategyAgent)
+        agent.agent_name = "ChiefStrategyAgent"
+        agent.agent_weights = {
+            "FundamentalAgent": 0.25,
+            "TechnicalAgent": 0.20,
+            "IndustryMacroAgent": 0.15,
+            "SentimentAgent": 0.15,
+            "FundFlowAgent": 0.15,
+            "ESGRiskAgent": 0.10,
+        }
+        agent.risk_levels = {
+            "低风险": {"range": (0, 20), "color": "green"},
+            "中低风险": {"range": (21, 40), "color": "light-green"},
+            "中等风险": {"range": (41, 60), "color": "yellow"},
+            "中高风险": {"range": (61, 80), "color": "orange"},
+            "高风险": {"range": (81, 100), "color": "red"},
+        }
+        agent.investment_recommendations = {
+            "强烈买入": {"description": "强烈买入", "confidence": "非常高", "signal_strength": 5},
+            "买入": {"description": "买入", "confidence": "高", "signal_strength": 4},
+            "持有": {"description": "持有", "confidence": "中等", "signal_strength": 3},
+            "谨慎观望": {"description": "谨慎观望", "confidence": "低", "signal_strength": 2},
+            "卖出": {"description": "卖出", "confidence": "高", "signal_strength": 1},
+        }
+        return agent
+
+    def test_risk_uses_current_agent_score_schema(self):
+        agent = self._chief()
+        risk = agent._assess_overall_risk({
+            "FundamentalAgent": {"overall_score": 8, "confidence_score": 0.9},
+            "TechnicalAgent": {"signal_strength": "strong_bearish", "confidence_score": 0.9},
+        })
+
+        self.assertLess(risk["risk_score"], 60,
+            "风险模型应读取 overall_score/signal_strength，而不是回退旧字段默认值")
+
+    def test_simulated_data_caps_buy_recommendation(self):
+        agent = self._chief()
+        result = agent._structure_result(
+            "300502",
+            {
+                "investment_recommendation": "强烈买入",
+                "confidence_score": 0.95,
+                "key_findings": ["趋势强"],
+            },
+            {"TechnicalAgent": {"data_quality_level": "simulated", "is_simulated": True}},
+            88.0,
+            {"risk_score": 40.0, "risk_level": "中低风险", "risk_factors": [], "risk_mitigation": []},
+            {"level": "simulated", "score": 40, "simulated_agents": ["TechnicalAgent"], "failed_agents": []},
+        )
+
+        self.assertEqual(result["investment_recommendation"], "谨慎观望")
+        self.assertLessEqual(result["confidence_score"], 0.55)
+        self.assertIn("compliance_disclaimer", result)
+        self.assertTrue(result["guardrail_notes"])
+        self.assertTrue(result["human_review"]["required"])
+        self.assertTrue(result["human_review"]["reasons"])
+
+    def test_human_review_required_for_high_confidence_directional_call(self):
+        agent = self._chief()
+        result = agent._structure_result(
+            "300502",
+            {
+                "investment_recommendation": "买入",
+                "confidence_score": 0.85,
+                "key_findings": ["趋势和基本面共振"],
+            },
+            {"TechnicalAgent": {"signal_strength": "bullish", "confidence_score": 0.85}},
+            78.0,
+            {"risk_score": 45.0, "risk_level": "中等风险", "risk_factors": [], "risk_mitigation": []},
+            {"level": "verified", "score": 95, "simulated_agents": [], "failed_agents": []},
+        )
+
+        self.assertTrue(result["human_review"]["required"])
+        self.assertIn("高强度", result["human_review"]["reasons"][0])
+
+    def test_position_plan_reduces_size_for_limited_data_and_high_risk(self):
+        agent = self._chief()
+        result = agent._structure_result(
+            "300502",
+            {
+                "investment_recommendation": "买入",
+                "confidence_score": 0.85,
+                "key_findings": ["趋势偏强"],
+            },
+            {"TechnicalAgent": {"signal_strength": "bullish", "confidence_score": 0.85}},
+            75.0,
+            {"risk_score": 72.0, "risk_level": "中高风险", "risk_factors": [], "risk_mitigation": []},
+            {"level": "limited", "score": 45, "simulated_agents": [], "failed_agents": ["FundamentalAgent"]},
+        )
+
+        plan = result["position_plan"]
+        self.assertLessEqual(plan["suggested_position_range"]["max_pct"], 0.03)
+        self.assertIn("risk_controls", plan)
+        self.assertEqual(plan["action"], "watch_or_probe")
+
+    def test_decision_boundaries_include_conflict_and_data_gaps(self):
+        agent = self._chief()
+        result = agent._structure_result(
+            "300502",
+            {
+                "investment_recommendation": "持有",
+                "confidence_score": 0.65,
+                "key_findings": ["多维度结论不完全一致"],
+            },
+            {"TechnicalAgent": {"signal_strength": "bullish", "confidence_score": 0.8}},
+            62.0,
+            {"risk_score": 55.0, "risk_level": "中等风险", "risk_factors": [], "risk_mitigation": []},
+            {"level": "partial", "score": 70, "partial_agents": ["FundFlowAgent"], "data_gaps": ["资金流缺口"]},
+            {"has_conflicts": True},
+        )
+
+        boundaries = result["decision_boundaries"]
+        self.assertTrue(boundaries["evidence_quality"]["missing_or_limited_data"])
+        self.assertTrue(any("分歧" in item for item in boundaries["reverse_risks"]))
+        self.assertTrue(boundaries["invalidation_conditions"])
+
+    def test_prompt_includes_data_quality_constraints(self):
+        agent = self._chief()
+        prompt = agent._generate_analysis_prompt(
+            "300502",
+            {},
+            50.0,
+            {"risk_level": "中等风险", "risk_score": 50.0},
+            [],
+            [],
+            data_quality={"level": "limited", "score": 45, "simulated_agents": [], "failed_agents": ["FundamentalAgent"], "unavailable_agents": [], "decision_policy": "限制建议强度"},
+        )
+
+        self.assertIn("数据质量与合规约束", prompt)
+        self.assertIn("限制建议强度", prompt)
+
+    def test_data_quality_detects_estimated_and_unavailable_inputs(self):
+        from hengline.agents.base_agent import AgentResult
+
+        agent = self._chief()
+        quality = agent._assess_data_quality(
+            {
+                "FundFlowAgent": {
+                    "data_quality_level": "estimated",
+                    "data_note": "机构持仓来自成交量代理估算",
+                },
+                "ESGRiskAgent": {
+                    "data_quality_level": "unavailable",
+                    "data_available": False,
+                    "data_note": "ESG 数据不可用",
+                },
+            },
+            {
+                "FundFlowAgent": AgentResult(agent_name="FundFlowAgent", success=True, result={}),
+                "ESGRiskAgent": AgentResult(agent_name="ESGRiskAgent", success=True, result={}),
+            },
+            {"data_gaps": []},
+        )
+
+        self.assertEqual(quality["level"], "limited")
+        self.assertIn("FundFlowAgent", quality["partial_agents"])
+        self.assertIn("ESGRiskAgent", quality["unavailable_agents"])
+
+
+# ════════════════════════════════════════════════════════════════════════
 # 汇总运行
 # ════════════════════════════════════════════════════════════════════════
 def run_all():
@@ -588,6 +783,7 @@ def run_all():
         TestP1_2_NoRandomData,
         TestP2_1_SharedStockDataManager,
         TestP2_2_UIFailureDisplay,
+        TestP3_ChiefDataQualityGuardrails,
     ]
 
     for cls in test_classes:

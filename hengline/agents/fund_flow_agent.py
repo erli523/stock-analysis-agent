@@ -518,6 +518,11 @@ class FundFlowAgent(BaseAgent):
             Dict[str, Any]: 结构化的结果
         """
         result = self.get_result_template()
+        institutional_note = institutional_data.get("note", "")
+        institutional_source = str(institutional_data.get("data_source", ""))
+        is_estimated = "estimated" in institutional_source or bool(institutional_note)
+        is_simulated = bool(stock_info.get("is_simulated") or money_flow_indicators.get("is_simulated"))
+        data_quality_level = "simulated" if is_simulated else ("estimated" if is_estimated else "verified")
         result.update({
             "stock_code": stock_code,
             "analysis_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -529,6 +534,10 @@ class FundFlowAgent(BaseAgent):
             "alert_signals": llm_analysis.get("alert_signals", []),
             "institutional_behavior": llm_analysis.get("institutional_behavior", {}),
             "confidence_score": llm_analysis.get("confidence_score", 0.85),
+            "data_available": True,
+            "data_note": institutional_note,
+            "data_quality_level": data_quality_level,
+            "is_simulated": is_simulated,
             "key_metrics": {
                 "money_flow_index": money_flow_indicators.get("money_flow_index", 0),
                 "flow_classification": money_flow_indicators.get("flow_classification", "neutral"),

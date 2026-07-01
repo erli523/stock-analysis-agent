@@ -758,6 +758,14 @@ ESG数据：
             Dict[str, Any]: 结构化的结果
         """
         result = self.get_result_template()
+        esg_available = esg_data.get("data_available", True) is not False and esg_data.get("overall_score") is not None
+        governance_source = str(governance_data.get("data_source", ""))
+        esg_source = str(esg_data.get("data_source", ""))
+        is_estimated = "proxy" in governance_source or "proxy" in esg_source
+        data_quality_level = "unavailable" if not esg_available else ("estimated" if is_estimated else "verified")
+        data_note = esg_data.get("note", "") or (
+            "ESG 数据来自代理指标，建议接入专业 ESG 数据源复核。" if is_estimated else ""
+        )
         result.update({
             "stock_code": stock_code,
             "analysis_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -769,6 +777,10 @@ ESG数据：
             "risk_signals": llm_analysis.get("risk_signals", []),
             "improvement_recommendations": llm_analysis.get("improvement_recommendations", []),
             "confidence_score": llm_analysis.get("confidence_score", 0.85),
+            "data_available": esg_available,
+            "data_note": data_note,
+            "data_quality_level": data_quality_level,
+            "is_simulated": bool(stock_info.get("is_simulated") or esg_data.get("is_simulated")),
             "esg_metrics": {
                 "overall_score": esg_data.get("overall_score", 0),
                 "rating": esg_data.get("rating", ""),
