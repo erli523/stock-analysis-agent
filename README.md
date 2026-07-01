@@ -21,9 +21,11 @@
 
 | 特性 | 说明 |
 |------|------|
-| 🧠 **多 Agent 并行** | LangGraph 编排 7 个专业 Agent，Map-Reduce 模式并行执行 |
+| 🧠 **多 Agent 并行** | LangGraph 编排 6 个专业 Agent + 1 首席策略 Agent，Map-Reduce 并行执行，信号量控制并发（默认 3）防止 LLM 限流 |
 | 🔁 **Reflection Loop** | Agent 输出结构校验失败时自动携带错误原因重试（最多 2 次），大幅降低 JSON 解析失败率 |
 | ⚖️ **冲突检测** | 独立的 ConflictAnalyzer 节点量化各 Agent 评分分歧、数据缺口，供首席策略参考 |
+| ⏱️ **差异化超时** | 每个 Agent 独立超时（可用环境变量覆盖），慢维度不拖累整体、快维度不浪费等待 |
+| 👑 **加权综合研判** | 首席策略 Agent 按维度权重融合评分，输出 5 档投资建议 + 5 档风险等级 + 仓位与风险缓解建议 |
 | 📚 **RAG 知识库** | LlamaIndex + DashScope Embedding，16 篇专业文档精准检索 |
 | 📊 **多源数据** | BaoStock 为主，AkShare / YFinance / 模拟数据多级降级 |
 | 🎨 **可视化界面** | Streamlit + Plotly 交互式 K 线、技术指标、财务分析图表 |
@@ -68,7 +70,7 @@ flowchart TD
 
     Conflict --> Chief["👑 首席策略 Agent\n综合研判 · 引用冲突分析"]
 
-    Chief --> Report(["📋 分析报告\n买卖评级 · 目标价 · 分歧说明"])
+    Chief --> Report(["📋 分析报告\n买卖评级 · 仓位建议 · 风险披露 · 分歧说明"])
 
     style Coord fill:#f0f7ff,stroke:#4a90d9
     style Reflect fill:#fef2f2,stroke:#ef4444
@@ -80,6 +82,39 @@ flowchart TD
 > **Reflection Loop 说明**：每个专业 Agent 执行后会用 `_validate_output()` 校验输出是否满足最低质量要求（`confidence_score` 是否合理、`key_findings` 是否为空、是否为有效 JSON 等）。若校验失败，错误原因会作为 `Reflection Hint` 注入到下一次 LLM 调用的 Prompt 中，最多重试 2 次，显著降低"LLM 返回不完整 JSON 导致分析降级"的概率。
 >
 > **ConflictAnalyzer 说明**：所有专业 Agent 完成后，冲突检测节点用纯 Python 逻辑（无需 LLM，执行耗时 <10ms）统一提取各 Agent 的 0-100 评分，检测评分分歧（差距 > 30 分）、数据缺口和失败维度，输出共识方向（偏多/偏空/中性/分歧），供首席策略 Agent 在最终建议中明确说明各维度的分歧和不确定性，避免"虚假共识"。
+
+---
+
+### 🧩 Agent 能力矩阵
+
+每个专业 Agent 都遵循统一的分析范式：**取数（共享 `StockDataManager`）→ 确定性指标计算 → RAG 知识检索 → LLM 结构化分析 → 结果校验**。各 Agent 覆盖 6 个分析维度，并向首席策略 Agent 贡献一个可量化的 0-100 评分。
+
+| Agent | 角色 | 6 个分析维度 | 关键数据 / 计算 | 贡献首席的评分字段 | 权重 |
+|-------|------|-------------|----------------|-------------------|:----:|
+| **FundamentalAgent** | 基本面 | 财务健康 · 盈利 · 成长 · 估值 · 竞争优势 · 管理质量 | 财报 + 估值指标 | `overall_score`（0-10 → 0-100） | **0.25** |
+| **TechnicalAgent** | 技术面 | 趋势 · 动量 · 量价 · 波动率 · 形态 · 支撑阻力 | `ta` 库计算 MA50/200、MACD、RSI、布林带、OBV、量比 | `signal_strength` 七档映射 | **0.20** |
+| **IndustryMacroAgent** | 行业宏观 | 行业前景 · 宏观经济 · 政策 · 竞争格局 · 行业周期 · 市场趋势 | 行业 ETF 表现 + 宏观环境 | `industry_score` 与 `economic_score` 均值 | **0.15** |
+| **SentimentAgent** | 情绪 | 新闻 · 社媒 · 投资者 · 市场 · 情绪趋势 · 事件影响 | 新闻数据 + 情感词分类 | `news_sentiment` 正向占比 | **0.15** |
+| **FundFlowAgent** | 资金流 | 机构持仓 · 大股东变动 · 资金流向 · 量能 · 内部交易 · 外资 | 成交量 + 资金流分类（默认 3 个月） | `flow_classification` 七档映射 | **0.15** |
+| **ESGRiskAgent** | ESG 风险 | 环境 · 社会 · 治理 · 争议 · 风险评估 · 可持续 | ESG 维度指标 | `esg_metrics.overall_score` | **0.10** |
+| **ChiefStrategyAgent** | 首席策略 | 综合研判 · 风险评估 · 关键因子识别 | 加权融合 + 冲突分析上下文 | 输出最终建议（不参与评分） | — |
+
+**首席策略 Agent 的最终输出：**
+
+- **投资建议（5 档）**：强烈买入 · 买入 · 持有 · 谨慎观望 · 卖出
+- **风险等级（5 档）**：低风险 · 中低风险 · 中等风险 · 中高风险 · 高风险
+- **综合指标**：加权综合评分 `composite_score`、风险分 `risk_score`、参与维度列表
+- **可执行建议**：仓位建议、关键监控指标、风险披露、风险缓解措施、各维度贡献摘要
+
+**⚙️ 工作流执行细节：**
+
+| 机制 | 实现 | 说明 |
+|------|------|------|
+| **并发控制** | `asyncio.Semaphore(AGENT_LLM_CONCURRENCY)` | 默认最多 3 个 Agent 同时调用 LLM，防止 API 限流；可用环境变量调整 |
+| **差异化超时** | `AGENT_TIMEOUTS` | 基本面 120s / 技术 · 行业 90s / 情绪 · 资金流 60s / ESG 45s / 首席 120s，均可用 `*_TIMEOUT` 环境变量覆盖 |
+| **评分归一化** | `_compute_agent_score` | 冲突检测节点把 6 个 Agent 的异构输出统一映射到 0-100，用于分歧检测与共识判断 |
+| **按需运行** | `enabled_agents` | UI 勾选或 CLI `--agents` 指定后，只构建/运行选中的专业 Agent |
+| **失败隔离** | `_generate_analysis_report` | 单个 Agent 失败仅跳过该维度并在 UI 标注，不影响其余维度与最终汇总 |
 
 ---
 
@@ -170,6 +205,14 @@ mindmap
       AkShare
       YFinance
       模拟数据
+    指标计算
+      ta技术指标库
+        MACD·RSI
+        布林带·OBV
+      pandas·numpy
+    后端服务
+      FastAPI
+      Uvicorn
     可视化
       Streamlit
       Plotly
@@ -260,6 +303,11 @@ EMBEDDING_MODEL=text-embedding-v4
 
 # === 股票数据（可选）===
 ALLTICK_TOKEN=xxxx
+
+# === 性能调优（可选）===
+AGENT_LLM_CONCURRENCY=3           # 同时进行的 Agent LLM 调用上限，API 限流时可调小
+FUNDAMENTAL_TIMEOUT=120           # 各 Agent 超时（秒），可按需覆盖
+ESG_TIMEOUT=45
 ```
 
 ### 3. 构建 RAG 知识库索引
@@ -426,7 +474,7 @@ python -m py_compile main.py app/application.py hengline/streamlit/st_main.py he
 ```
 stock-analysis-agent/
 ├── hengline/
-│   ├── agents/          # 7 个专业 Agent + 基类
+│   ├── agents/          # 6 专业 Agent + 首席策略 Agent + LangGraph 协调器 + 基类
 │   ├── client/          # LLM 客户端（DeepSeek/Qwen/OpenAI/Ollama）
 │   ├── rag/             # RAG 链与向量存储管理
 │   ├── stock/           # 数据源（BaoStock/AkShare/YFinance 等）
