@@ -70,6 +70,29 @@ def run_cli_analysis(argv=None) -> int:
     return 0 if result.get("success") else 1
 
 
+def run_cli_alert_check(argv=None) -> int:
+    """Check local price alerts from the command line."""
+    parser = argparse.ArgumentParser(description="Check local stock price alerts")
+    parser.add_argument("--json", action="store_true", help="以 JSON 格式输出")
+    args = parser.parse_args(argv)
+
+    from hengline.stock.stock_manage import get_stock_price_data
+    from hengline.streamlit.st_product_features import check_alerts
+
+    rows = check_alerts(get_stock_price_data)
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2, default=str))
+    else:
+        if not rows:
+            print("No alerts configured.")
+        for row in rows:
+            print(
+                f"{row['股票']} latest={row['最新价']} "
+                f"above={row['高于']} below={row['低于']} status={row['状态']}"
+            )
+    return 2 if any(row.get("状态") == "触发" for row in rows) else 0
+
+
 class HengLineApp(AppBaseEnv):
     """HengLine应用启动类"""
 
@@ -163,4 +186,6 @@ class HengLineApp(AppBaseEnv):
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "analyze":
         sys.exit(run_cli_analysis(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "alerts-check":
+        sys.exit(run_cli_alert_check(sys.argv[2:]))
     HengLineApp().main()

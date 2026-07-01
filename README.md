@@ -277,6 +277,9 @@ streamlit run hengline/streamlit/st_main.py
 
 # 命令行单次分析
 python main.py analyze 300502 --time-range 1m --agents TechnicalAgent FundamentalAgent
+
+# 命令行检查本地价格预警（可接 Windows 任务计划 / cron）
+python main.py alerts-check --json
 ```
 
 打开浏览器访问 **http://localhost:8501**
@@ -314,6 +317,7 @@ python main.py analyze 300502 --time-range 1m --agents TechnicalAgent Fundamenta
 - **股票筛选器**：支持从自选股或手工输入候选池中筛选估值、涨跌幅、趋势条件。
 - **策略回测**：提供均线交叉策略收益曲线和买入持有基准对比。
 - **组合与预警**：本地 JSON 保存持仓和价格阈值，便于后续接入定时扫描/推送。
+- **预警脚本化**：`python main.py alerts-check` 可读取 `data/user/alerts.json` 并输出触发状态，适合交给系统任务定时执行。
 
 ---
 

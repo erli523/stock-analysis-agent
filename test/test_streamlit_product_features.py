@@ -88,6 +88,17 @@ class ProductFeatureHelperTests(unittest.TestCase):
             ["TechnicalAgent", "FundFlowAgent"],
         )
 
+    def test_check_alerts_returns_trigger_status(self):
+        def fake_price_data(symbol, period="1m"):
+            return pd.DataFrame({"Close": [10.0, 12.5]})
+
+        rows = features.check_alerts(
+            fake_price_data,
+            [{"symbol": "300502", "above": 12.0, "below": 0, "enabled": True}],
+        )
+        self.assertEqual(rows[0]["状态"], "触发")
+        self.assertEqual(rows[0]["最新价"], 12.5)
+
     def test_markdown_report_contains_recommendation_and_findings(self):
         result = {
             "success": True,

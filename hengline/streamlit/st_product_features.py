@@ -602,6 +602,13 @@ def render_alerts_page(get_stock_price_data_func) -> None:
         st.info("暂无预警。")
         return
 
+    rows = check_alerts(get_stock_price_data_func, alerts)
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    st.caption(f"预警配置文件：{ALERTS_FILE}。可用 `python main.py alerts-check` 进行命令行检查，并交给 Windows 任务计划或 cron 定时执行。")
+
+
+def check_alerts(get_stock_price_data_func, alerts: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    alerts = load_json_list(ALERTS_FILE) if alerts is None else alerts
     rows = []
     for alert in alerts:
         symbol = str(alert.get("symbol", "")).upper()
@@ -622,5 +629,4 @@ def render_alerts_page(get_stock_price_data_func) -> None:
             "启用": bool(alert.get("enabled")),
             "状态": "触发" if triggered else "未触发",
         })
-    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
-    st.caption(f"预警配置文件：{ALERTS_FILE}。当前版本支持本地配置和手动检查，可继续接 APScheduler/邮件/Server酱。")
+    return rows
